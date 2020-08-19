@@ -1,8 +1,10 @@
 Tutorials
 =========
 
-Getting Started
----------------
+Not sure where to begin? Take a look at :doc:`/user/getting_started`.
+
+Quick Starts
+------------
 
 .. toctree::
     :maxdepth: 1
@@ -11,13 +13,22 @@ Getting Started
     geomesa-quickstart-accumulo
     geomesa-quickstart-cassandra
     geomesa-quickstart-kafka
+    geomesa-quickstart-redis
     geomesa-quickstart-fsds
     geomesa-quickstart-kudu
     geomesa-quickstart-lambda
     geomesa-quickstart-nifi
+
+Installation
+------------
+
+.. toctree::
+    :maxdepth: 1
+
     geodocker-geomesa/index
     geomesa-hbase-s3-on-aws
     geomesa-hbase-on-cdh
+    geomesa-fs-on-azure
 
 Data In/Out
 -----------
@@ -28,10 +39,9 @@ Data In/Out
     geomesa-examples-gdelt
     geomesa-examples-transformations
     geomesa-examples-avro
-    geomesa-blobstore
-    geomesa-blobstore-exif
     geomesa-quickstart-storm
-    geomesa-raster
+
+.. _tutorials_analytics:
 
 Data Analysis
 -------------

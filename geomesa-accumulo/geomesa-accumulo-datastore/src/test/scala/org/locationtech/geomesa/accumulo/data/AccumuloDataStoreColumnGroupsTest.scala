@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -9,46 +9,45 @@
 package org.locationtech.geomesa.accumulo.data
 
 import java.io.{ByteArrayInputStream, ByteArrayOutputStream}
+import java.nio.charset.StandardCharsets
 import java.util.Date
 
 import com.github.benmanes.caffeine.cache.{CacheLoader, Caffeine}
-import com.vividsolutions.jts.geom.{Envelope, Point}
-import org.apache.arrow.memory.RootAllocator
 import org.geotools.data._
 import org.geotools.filter.text.ecql.ECQL
 import org.geotools.filter.visitor.ExtractBoundsFilterVisitor
 import org.geotools.geometry.jts.ReferencedEnvelope
 import org.geotools.referencing.crs.DefaultGeographicCRS
 import org.junit.runner.RunWith
-import org.locationtech.geomesa.accumulo.TestWithDataStore
-import org.locationtech.geomesa.accumulo.index._
+import org.locationtech.geomesa.accumulo.TestWithFeatureType
+import org.locationtech.geomesa.accumulo.data.AccumuloQueryPlan.{BatchScanPlan, JoinPlan}
 import org.locationtech.geomesa.arrow.io.SimpleFeatureArrowFileReader
 import org.locationtech.geomesa.features.ScalaSimpleFeature
-import org.locationtech.geomesa.index.conf.QueryHints
 import org.locationtech.geomesa.index.conf.QueryHints.{BIN_BATCH_SIZE, BIN_TRACK}
+import org.locationtech.geomesa.index.conf.{ColumnGroups, QueryHints}
 import org.locationtech.geomesa.index.iterators.{DensityScan, StatsScan}
-import org.locationtech.geomesa.index.planning.{QueryPlanner, Transforms}
 import org.locationtech.geomesa.utils.bin.BinaryOutputEncoder
 import org.locationtech.geomesa.utils.bin.BinaryOutputEncoder.EncodedValues
 import org.locationtech.geomesa.utils.collection.SelfClosingIterator
-import org.locationtech.geomesa.utils.geotools.SimpleFeatureTypes
+import org.locationtech.geomesa.utils.geotools.Transform.Transforms
+import org.locationtech.geomesa.utils.geotools.{SimpleFeatureTypes, Transform}
 import org.locationtech.geomesa.utils.io.WithClose
 import org.locationtech.geomesa.utils.stats.{MinMax, Stat}
+import org.locationtech.jts.geom.{Envelope, Point}
 import org.opengis.feature.simple.{SimpleFeature, SimpleFeatureType}
 import org.opengis.filter.Filter
-import org.opengis.filter.expression.Expression
 import org.specs2.mutable.Specification
 import org.specs2.runner.JUnitRunner
 
 @RunWith(classOf[JUnitRunner])
-class AccumuloDataStoreColumnGroupsTest extends Specification with TestWithDataStore {
+class AccumuloDataStoreColumnGroupsTest extends Specification with TestWithFeatureType {
 
   import scala.collection.JavaConverters._
 
   // note: using Seq.foreach, ok instead of foreach(Seq) shaves several seconds off the time to run this test
 
-  override val spec: String = "name:String:index=join:column-groups=b,age:Int:index=full:column-groups=b," +
-      "height:Double,track:String:column-groups=a,dtg:Date:column-groups=a,*geom:Point:srid=4326:column-groups='a,b'"
+  override val spec: String = "name:String:index=join:column-groups=y,age:Int:index=full:column-groups=y," +
+      "height:Double,track:String:column-groups=x,dtg:Date:column-groups=x,*geom:Point:srid=4326:column-groups='x,y'"
 
   val features = IndexedSeq.tabulate(10) { i =>
     ScalaSimpleFeature.create(sft, s"$i", s"name$i", i * 10, 60 + i, s"track-${i % 3}",
@@ -56,10 +55,11 @@ class AccumuloDataStoreColumnGroupsTest extends Specification with TestWithDataS
   }
 
   val transformCache = Caffeine.newBuilder().build(
-    new CacheLoader[Array[String], (SimpleFeatureType, Seq[Expression])]() {
-      override def load(transform: Array[String]): (SimpleFeatureType, Seq[Expression]) = {
-        val (tdefs, tsft) = QueryPlanner.buildTransformSFT(sft, transform)
-        (tsft, Transforms.definitions(tdefs).map(_.expression))
+    new CacheLoader[Array[String], (SimpleFeatureType, Seq[Transform])]() {
+      override def load(transform: Array[String]): (SimpleFeatureType, Seq[Transform]) = {
+        val definitions = Transforms.apply(sft, transform)
+        val schema = Transforms.schema(sft, definitions)
+        (schema, definitions)
       }
     }
   )
@@ -90,7 +90,7 @@ class AccumuloDataStoreColumnGroupsTest extends Specification with TestWithDataS
   ).map(toFilter)
 
   val filtersB = Seq(
-    ("bbox(geom,45.4,54.9,45.8,55.1) AND age >= 50", 5 to 8),
+    ("bbox(geom,45.41,54.9,45.8,55.1) AND age IS NOT NULL", 5 to 8),
     ("age >= 50 AND name IN ('name1', 'name2')", Seq.empty)
   ).map(toFilter)
 
@@ -100,7 +100,7 @@ class AccumuloDataStoreColumnGroupsTest extends Specification with TestWithDataS
     ("bbox(geom,45.4,54.9,45.8,55.1) and height < 67", 4 to 6),
     ("age >= 50 and height < 67", 5 to 6),
     ("bbox(geom,45.4,54.9,45.8,55.1) AND name IN ('name5', 'name6') and height < 67", 5 to 6),
-    ("bbox(geom,45.4,54.9,45.8,55.1) AND age >= 50 and height < 67", 5 to 6),
+    ("bbox(geom,45.41,54.9,45.8,55.1) AND age IS NOT NULL and height < 67", 5 to 6),
     ("age >= 50 AND name IN ('name1', 'name2') and height < 67", Seq.empty)
   ).map(toFilter)
 
@@ -125,13 +125,12 @@ class AccumuloDataStoreColumnGroupsTest extends Specification with TestWithDataS
     "create column groups" in {
       val tables = ds.getAllIndexTableNames(sft.getTypeName)
       foreach(tables) { table =>
-        ds.connector.tableOperations().getLocalityGroups(table).asScala.keys must containAllOf(Seq("a", "b"))
+        ds.connector.tableOperations().getLocalityGroups(table).asScala.keys must containAllOf(Seq("x", "y"))
       }
     }
     "reject column groups that correspond to default columns" in {
-      import AccumuloColumnGroups._
-      Seq(IndexColumnFamily, BinColumnFamily, AttributeColumnFamily, default).foreach { col =>
-        val spec = s"name:String:column-groups=${col.toString},*geom:Point:srid=4326"
+      Seq(ColumnGroups.Default, ColumnGroups.Attributes).foreach { col =>
+        val spec = s"name:String:column-groups=${new String(col, StandardCharsets.UTF_8)},*geom:Point:srid=4326"
         val sft = SimpleFeatureTypes.createType(sftName + col, spec)
         ds.createSchema(sft) must throwAn[IllegalArgumentException]
       }
@@ -146,13 +145,13 @@ class AccumuloDataStoreColumnGroupsTest extends Specification with TestWithDataS
         (transformsA ++ transformsAB).foreach { transform =>
           val query = new Query(sft.getTypeName, filter, transform)
           query.getHints.put(QueryHints.LOOSE_BBOX, false)
-          foreach(ds.getQueryPlan(query))(_.columnFamilies.map(_.toString) mustEqual Seq("a"))
+          foreach(ds.getQueryPlan(query))(_.columnFamily.map(_.toString) must beSome("x"))
           query.toList mustEqual expected.toFeatures(transform)
         }
         (transformsB ++ transformsDefault).foreach { transform =>
           val query = new Query(sft.getTypeName, filter, transform)
           query.getHints.put(QueryHints.LOOSE_BBOX, false)
-          foreach(ds.getQueryPlan(query))(_.columnFamilies mustEqual Seq(AccumuloColumnGroups.default))
+          foreach(ds.getQueryPlan(query))(_.columnFamily.map(_.copyBytes()) must beSome(ColumnGroups.Default))
           query.toList mustEqual expected.toFeatures(transform)
         }
       }
@@ -163,13 +162,13 @@ class AccumuloDataStoreColumnGroupsTest extends Specification with TestWithDataS
         (transformsB ++ transformsAB).foreach { transform =>
           val query = new Query(sft.getTypeName, filter, transform)
           query.getHints.put(QueryHints.LOOSE_BBOX, false)
-          foreach(ds.getQueryPlan(query))(_.columnFamilies.map(_.toString) mustEqual Seq("b"))
+          foreach(ds.getQueryPlan(query))(_.columnFamily.map(_.toString) must beSome("y"))
           query.toList mustEqual expected.toFeatures(transform)
         }
         (transformsA ++ transformsDefault).foreach { transform =>
           val query = new Query(sft.getTypeName, filter, transform)
           query.getHints.put(QueryHints.LOOSE_BBOX, false)
-          foreach(ds.getQueryPlan(query))(_.columnFamilies mustEqual Seq(AccumuloColumnGroups.default))
+          foreach(ds.getQueryPlan(query))(_.columnFamily.map(_.copyBytes()) must beSome(ColumnGroups.Default))
           query.toList mustEqual expected.toFeatures(transform)
         }
       }
@@ -180,7 +179,7 @@ class AccumuloDataStoreColumnGroupsTest extends Specification with TestWithDataS
         (transformsA ++ transformsB ++ transformsAB ++ transformsDefault).foreach { transform =>
           val query = new Query(sft.getTypeName, filter, transform)
           query.getHints.put(QueryHints.LOOSE_BBOX, false)
-          foreach(ds.getQueryPlan(query))(_.columnFamilies mustEqual Seq(AccumuloColumnGroups.default))
+          foreach(ds.getQueryPlan(query))(_.columnFamily.map(_.copyBytes()) must beSome(ColumnGroups.Default))
           query.toList mustEqual expected.toFeatures(transform)
         }
       }
@@ -192,15 +191,15 @@ class AccumuloDataStoreColumnGroupsTest extends Specification with TestWithDataS
 
       // no transform, should join against record table
       foreach(ds.getQueryPlan(new Query(sft.getTypeName, filter))) { plan =>
-        plan.columnFamilies mustEqual Seq(AccumuloColumnGroups.IndexColumnFamily)
+        plan.columnFamily.map(_.copyBytes()) must beSome(ColumnGroups.Default)
         plan must beAnInstanceOf[JoinPlan]
-        plan.asInstanceOf[JoinPlan].joinQuery.columnFamilies mustEqual Seq(AccumuloColumnGroups.default)
+        plan.asInstanceOf[JoinPlan].joinQuery.columnFamily.map(_.copyBytes()) must beSome(ColumnGroups.Default)
       }
       new Query(sft.getTypeName, filter).toList mustEqual expected.toFeatures(null)
 
-      // name and geom transform, should be a regular index non-join query
+      // name and geom transform, should be a regular index non-join query and use smallest col group
       foreach(ds.getQueryPlan(new Query(sft.getTypeName, filter, Array("name", "geom")))) { plan =>
-        plan.columnFamilies mustEqual Seq(AccumuloColumnGroups.IndexColumnFamily)
+        plan.columnFamily.map(_.toString) must beSome("y")
         plan must beAnInstanceOf[BatchScanPlan]
       }
       new Query(sft.getTypeName, filter, Array("name", "geom")).toList mustEqual
@@ -215,9 +214,9 @@ class AccumuloDataStoreColumnGroupsTest extends Specification with TestWithDataS
       transforms.foreach { transform =>
         val query = new Query(sft.getTypeName, filter, transform)
         foreach(ds.getQueryPlan(query)) { plan =>
-          plan.columnFamilies mustEqual Seq(AccumuloColumnGroups.IndexColumnFamily)
+          plan.columnFamily.map(_.copyBytes()) must beSome(ColumnGroups.Default)
           plan must beAnInstanceOf[JoinPlan]
-          plan.asInstanceOf[JoinPlan].joinQuery.columnFamilies mustEqual Seq(AccumuloColumnGroups.default)
+          plan.asInstanceOf[JoinPlan].joinQuery.columnFamily.map(_.copyBytes()) must beSome(ColumnGroups.Default)
         }
         query.toList mustEqual expected.toFeatures(transform)
       }
@@ -232,9 +231,9 @@ class AccumuloDataStoreColumnGroupsTest extends Specification with TestWithDataS
 
       // should join against record table using col family b
       foreach(ds.getQueryPlan(query)) { plan =>
-        plan.columnFamilies mustEqual Seq(AccumuloColumnGroups.IndexColumnFamily)
+        plan.columnFamily.map(_.toString) must beSome("y")
         plan must beAnInstanceOf[JoinPlan]
-        plan.asInstanceOf[JoinPlan].joinQuery.columnFamilies.map(_.toString) mustEqual Seq("b")
+        plan.asInstanceOf[JoinPlan].joinQuery.columnFamily.map(_.toString) must beSome("y")
       }
       query.toList mustEqual expected.toFeatures(transforms)
     }
@@ -248,24 +247,22 @@ class AccumuloDataStoreColumnGroupsTest extends Specification with TestWithDataS
       query.getHints.put(QueryHints.ARROW_DICTIONARY_FIELDS, "track")
       query.getHints.put(QueryHints.ARROW_BATCH_SIZE, 10)
 
-      foreach(ds.getQueryPlan(query))(_.columnFamilies.map(_.toString) mustEqual Seq("a"))
+      foreach(ds.getQueryPlan(query))(_.columnFamily.map(_.toString) must beSome("x"))
 
       val arrows = SelfClosingIterator(ds.getFeatureReader(query, Transaction.AUTO_COMMIT))
       val out = new ByteArrayOutputStream
       arrows.foreach(sf => out.write(sf.getAttribute(0).asInstanceOf[Array[Byte]]))
       def in() = new ByteArrayInputStream(out.toByteArray)
-      WithClose(new RootAllocator(Long.MaxValue)) { allocator =>
-        WithClose(SimpleFeatureArrowFileReader.streaming(in)(allocator)) { reader =>
-          val results = SelfClosingIterator(reader.features()).map { f =>
-            // round the points, as precision is lost due to the arrow encoding
-            val attributes = f.getAttributes.asScala.collect {
-              case p: Point => s"POINT (${Math.round(p.getX * 10) / 10d} ${Math.round(p.getY * 10) / 10d})"
-              case a => a
-            }
-            ScalaSimpleFeature.create(f.getFeatureType, f.getID, attributes: _*)
-          }.toList
-          results must containTheSameElementsAs((4 to 8).toFeatures(query.getPropertyNames))
-        }
+      WithClose(SimpleFeatureArrowFileReader.streaming(in)) { reader =>
+        val results = SelfClosingIterator(reader.features()).map { f =>
+          // round the points, as precision is lost due to the arrow encoding
+          val attributes = f.getAttributes.asScala.collect {
+            case p: Point => s"POINT (${Math.round(p.getX * 10) / 10d} ${Math.round(p.getY * 10) / 10d})"
+            case a => a
+          }
+          ScalaSimpleFeature.create(f.getFeatureType, f.getID, attributes: _*)
+        }.toList
+        results must containTheSameElementsAs((4 to 8).toFeatures(query.getPropertyNames))
       }
     }
     "work with bin queries" in {
@@ -276,7 +273,7 @@ class AccumuloDataStoreColumnGroupsTest extends Specification with TestWithDataS
       query.getHints.put(BIN_TRACK, "track")
       query.getHints.put(BIN_BATCH_SIZE, 1000)
 
-      foreach(ds.getQueryPlan(query))(_.columnFamilies.map(_.toString) mustEqual Seq("a"))
+      foreach(ds.getQueryPlan(query))(_.columnFamily.map(_.toString) must beSome("x"))
 
       val bytes = SelfClosingIterator(ds.getFeatureReader(query, Transaction.AUTO_COMMIT))
       val out = new ByteArrayOutputStream
@@ -303,7 +300,7 @@ class AccumuloDataStoreColumnGroupsTest extends Specification with TestWithDataS
       query.getHints.put(QueryHints.DENSITY_WIDTH, 640)
       query.getHints.put(QueryHints.DENSITY_HEIGHT, 480)
 
-      foreach(ds.getQueryPlan(query))(_.columnFamilies.map(_.toString) mustEqual Seq("a"))
+      foreach(ds.getQueryPlan(query))(_.columnFamily.map(_.toString) must beSome("x"))
 
       val decode = DensityScan.decodeResult(envelope, 640, 480)
       val grid = SelfClosingIterator(ds.getFeatureSource(sftName).getFeatures(query).features).flatMap(decode).toList
@@ -317,7 +314,7 @@ class AccumuloDataStoreColumnGroupsTest extends Specification with TestWithDataS
       query.getHints.put(QueryHints.STATS_STRING, "MinMax(track)")
       query.getHints.put(QueryHints.ENCODE_STATS, true)
 
-      foreach(ds.getQueryPlan(query))(_.columnFamilies.map(_.toString) mustEqual Seq("a"))
+      foreach(ds.getQueryPlan(query))(_.columnFamily.map(_.toString) must beSome("x"))
 
       def decode(sf: SimpleFeature): Stat = StatsScan.decodeStat(sft)(sf.getAttribute(0).asInstanceOf[String])
       val stats = SelfClosingIterator(ds.getFeatureSource(sftName).getFeatures(query).features).map(decode).toList

@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -11,7 +11,7 @@ package org.locationtech.geomesa.utils.bin
 import java.io.ByteArrayOutputStream
 import java.text.SimpleDateFormat
 
-import com.vividsolutions.jts.geom.{LineString, Point}
+import org.locationtech.jts.geom.{LineString, Point}
 import org.geotools.data.collection.ListFeatureCollection
 import org.geotools.feature.simple.{SimpleFeatureBuilder, SimpleFeatureTypeBuilder}
 import org.junit.runner.RunWith
@@ -193,7 +193,7 @@ class BinaryOutputEncoderTest extends Specification {
         builder.setName("binlinetest")
         builder.add("track", classOf[String])
         builder.add("dtg", classOf[java.sql.Timestamp])
-        builder.userData(SimpleFeatureTypes.AttributeConfigs.USER_DATA_LIST_TYPE, classOf[java.sql.Timestamp].getName)
+        builder.userData(SimpleFeatureTypes.AttributeConfigs.UserDataListType, classOf[java.sql.Timestamp].getName)
         builder.add("dates", classOf[java.util.List[java.sql.Timestamp]])
         builder.add("geom", classOf[LineString], org.locationtech.geomesa.utils.geotools.CRS_EPSG_4326)
         builder.buildFeatureType()

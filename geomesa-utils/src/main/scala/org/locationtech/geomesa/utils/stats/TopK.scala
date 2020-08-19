@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -21,17 +21,17 @@ import scala.collection.immutable.ListMap
   * @param summary stream summary object
   * @tparam T attribute type binding
   */
-class TopK[T] private [stats] (val sft: SimpleFeatureType,
-                               val property: String,
-                               private [stats] val summary: StreamSummary[T] = StreamSummary[T](TopK.StreamCapacity))
-    extends Stat with LazyLogging {
+class TopK[T] private [stats] (
+    val sft: SimpleFeatureType,
+    val property: String,
+    private [stats] val summary: StreamSummary[T]
+  ) extends Stat with LazyLogging {
 
   import TopK.StreamCapacity
 
-  override type S = TopK[T]
+  def this(sft: SimpleFeatureType, property: String) = this(sft, property, StreamSummary[T](TopK.StreamCapacity))
 
-  @deprecated("property")
-  lazy val attribute: Int = i
+  override type S = TopK[T]
 
   private val i = sft.indexOf(property)
 

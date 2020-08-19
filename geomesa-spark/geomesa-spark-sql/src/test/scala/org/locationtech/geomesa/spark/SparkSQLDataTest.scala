@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -12,7 +12,7 @@ import java.{util => ju}
 import java.util.{Map => JMap}
 
 import com.typesafe.scalalogging.LazyLogging
-import com.vividsolutions.jts.geom.{Coordinate, GeometryFactory, Point}
+import org.locationtech.jts.geom.{Coordinate, GeometryFactory, Point}
 import org.apache.spark.sql.{Column, DataFrame, SQLContext, SQLTypes, SparkSession}
 import org.geotools.data.{DataStore, DataStoreFinder}
 import org.geotools.geometry.jts.JTSFactoryFinder
@@ -343,11 +343,11 @@ class SparkSQLDataTest extends Specification with LazyLogging {
       var now = System.currentTimeMillis()
       val r1 = spark.sql("select * from polys join points on st_intersects(points.geom, polys.geom)")
       val count = r1.count()
-      logger.info(s"Regular join took ${System.currentTimeMillis() - now}ms")
+      logger.debug(s"Regular join took ${System.currentTimeMillis() - now}ms")
       now = System.currentTimeMillis()
       val r2 = spark.sql("select * from polysSpatial join pointsSpatial on st_intersects(pointsSpatial.geom, polysSpatial.geom)")
       val sweeplineCount = r2.count()
-      logger.info(s"Sweepline join took ${System.currentTimeMillis() - now}ms")
+      logger.debug(s"Sweepline join took ${System.currentTimeMillis() - now}ms")
       sweeplineCount mustEqual count
     }
 

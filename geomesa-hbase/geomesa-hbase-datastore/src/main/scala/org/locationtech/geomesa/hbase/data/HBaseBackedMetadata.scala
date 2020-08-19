@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -8,39 +8,34 @@
 
 package org.locationtech.geomesa.hbase.data
 
+import org.apache.hadoop.hbase.TableName
 import org.apache.hadoop.hbase.client._
 import org.apache.hadoop.hbase.util.Bytes
-import org.apache.hadoop.hbase.{HColumnDescriptor, HTableDescriptor, TableName}
 import org.locationtech.geomesa.hbase.utils.HBaseVersions
-import org.locationtech.geomesa.index.metadata.{CachedLazyBinaryMetadata, MetadataSerializer}
+import org.locationtech.geomesa.index.metadata.{KeyValueStoreMetadata, MetadataSerializer}
 import org.locationtech.geomesa.utils.collection.CloseableIterator
+import org.locationtech.geomesa.utils.io.WithClose
 
 import scala.collection.JavaConversions._
 
-class HBaseBackedMetadata[T](val connection: Connection, val catalog: TableName, val serializer: MetadataSerializer[T])
-    extends CachedLazyBinaryMetadata[T] {
+class HBaseBackedMetadata[T](connection: Connection, catalog: TableName, val serializer: MetadataSerializer[T])
+    extends { private val table = connection.getTable(catalog) } with KeyValueStoreMetadata[T] {
 
-  import HBaseMetadataAdapter._
+  import HBaseBackedMetadata._
 
-  lazy private val table = connection.getTable(catalog)
-
-  override protected def checkIfTableExists: Boolean = {
-    val admin = connection.getAdmin
-    try { admin.tableExists(catalog) } finally { admin.close() }
-  }
+  override protected def checkIfTableExists: Boolean = WithClose(connection.getAdmin)(_.tableExists(catalog))
 
   override protected def createTable(): Unit = {
-    val admin = connection.getAdmin
-    try {
+    WithClose(connection.getAdmin) { admin =>
       if (!admin.tableExists(catalog)) {
-        val descriptor = new HTableDescriptor(catalog)
-        HBaseVersions.addFamily(descriptor, ColumnFamilyDescriptor)
-        admin.createTable(descriptor)
+        HBaseVersions.createTableAsync(admin, catalog, Seq(ColumnFamily), None, None, None, Some(true), None, Seq.empty)
+        HBaseIndexAdapter.waitForTable(admin, catalog)
       }
-    } finally {
-      admin.close()
     }
   }
+
+  override protected def createEmptyBackup(timestamp: String): HBaseBackedMetadata[T] =
+    new HBaseBackedMetadata(connection, TableName.valueOf(s"${catalog}_${timestamp}_bak"), serializer)
 
   override protected def write(rows: Seq[(Array[Byte], Array[Byte])]): Unit =
     table.put(rows.map { case (r, v) => new Put(r).addColumn(ColumnFamily, ColumnQualifier, v) }.toList)
@@ -65,8 +60,7 @@ class HBaseBackedMetadata[T](val connection: Connection, val catalog: TableName,
   override def close(): Unit = table.close()
 }
 
-object HBaseMetadataAdapter {
+object HBaseBackedMetadata {
   val ColumnFamily: Array[Byte] = Bytes.toBytes("m")
-  val ColumnFamilyDescriptor = new HColumnDescriptor(ColumnFamily)
   val ColumnQualifier: Array[Byte] = Bytes.toBytes("v")
 }

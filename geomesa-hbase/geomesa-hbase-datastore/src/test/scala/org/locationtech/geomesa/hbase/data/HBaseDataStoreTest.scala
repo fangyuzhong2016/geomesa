@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -8,42 +8,52 @@
 
 package org.locationtech.geomesa.hbase.data
 
+import java.io.File
+import java.util.Collections
+
 import com.typesafe.scalalogging.LazyLogging
 import org.apache.hadoop.hbase.TableName
 import org.geotools.data._
 import org.geotools.data.collection.ListFeatureCollection
 import org.geotools.data.simple.SimpleFeatureStore
-import org.geotools.factory.Hints
 import org.geotools.filter.text.ecql.ECQL
+import org.geotools.util.factory.Hints
+import org.junit.runner.RunWith
 import org.locationtech.geomesa.features.ScalaSimpleFeature
+import org.locationtech.geomesa.filter.function.ProxyIdFunction
 import org.locationtech.geomesa.hbase.data.HBaseDataStoreParams._
-import org.locationtech.geomesa.hbase.index.{HBaseAttributeIndex, HBaseIdIndex, HBaseZ3Index}
-import org.locationtech.geomesa.index.conf.{QueryProperties, SchemaProperties}
+import org.locationtech.geomesa.index.api.GeoMesaFeatureIndex
+import org.locationtech.geomesa.index.conf.{QueryHints, QueryProperties, SchemaProperties}
+import org.locationtech.geomesa.index.index.attribute.AttributeIndex
+import org.locationtech.geomesa.index.index.id.IdIndex
+import org.locationtech.geomesa.index.index.z3.Z3Index
 import org.locationtech.geomesa.process.query.ProximitySearchProcess
 import org.locationtech.geomesa.process.tube.TubeSelectProcess
 import org.locationtech.geomesa.utils.collection.SelfClosingIterator
 import org.locationtech.geomesa.utils.conf.{GeoMesaProperties, SemanticVersion}
-import org.locationtech.geomesa.utils.geotools.SimpleFeatureTypes
+import org.locationtech.geomesa.utils.geotools.{FeatureUtils, SimpleFeatureTypes}
+import org.locationtech.geomesa.utils.io.WithClose
 import org.opengis.feature.simple.SimpleFeature
 import org.opengis.filter.Filter
 import org.specs2.matcher.MatchResult
+import org.specs2.mutable.Specification
+import org.specs2.runner.JUnitRunner
 
 import scala.collection.JavaConversions._
 import scala.collection.JavaConverters._
 
-class HBaseDataStoreTest extends HBaseTest with LazyLogging {
+@RunWith(classOf[JUnitRunner])
+class HBaseDataStoreTest extends Specification with LazyLogging {
 
   sequential
-
-  step {
-    logger.info("Starting the HBase DataStore Test")
-  }
 
   "HBaseDataStore" should {
     "work with points" in {
       val typeName = "testpoints"
 
-      val params = Map(ConnectionParam.getName -> connection, HBaseCatalogParam.getName -> catalogTableName)
+      val params = Map(
+        ConnectionParam.getName -> MiniCluster.connection,
+        HBaseCatalogParam.getName -> getClass.getSimpleName)
       val ds = DataStoreFinder.getDataStore(params).asInstanceOf[HBaseDataStore]
       ds must not(beNull)
 
@@ -92,9 +102,13 @@ class HBaseDataStoreTest extends HBaseTest with LazyLogging {
               testQuery(ds, typeName, "attr = 'name5' and bbox(geom,38,48,52,62) and dtg DURING 2014-01-01T00:00:00.000Z/2014-01-08T12:00:00.000Z", transforms, Seq(toAdd(5)))
               testQuery(ds, typeName, "name < 'name5'", transforms, toAdd.take(5))
               testQuery(ds, typeName, "name = 'name5'", transforms, Seq(toAdd(5)))
+              testQuery(ds, typeName, s"bbox(geom,39,49,50,60) AND dtg DURING 2014-01-01T00:00:00.000Z/2014-01-08T12:00:00.000Z AND (proxyId() = ${ProxyIdFunction.proxyId("0")} OR proxyId() = ${ProxyIdFunction.proxyId("1")})", transforms, toAdd.take(2))
 
               // this query should be blocked
               testQuery(ds, typeName, "INCLUDE", transforms, toAdd) must throwA[RuntimeException]
+              // with max features set, it should go through - don't count, that will be blocked
+              testQuery(ds, new Query(typeName, ECQL.toFilter("INCLUDE"), 10, transforms, null), toAdd, count = false)
+
               QueryProperties.BlockFullTableScans.threadLocalValue.remove()
               // now it should go through
               testQuery(ds, typeName, "INCLUDE", transforms, toAdd)
@@ -132,6 +146,33 @@ class HBaseDataStoreTest extends HBaseTest with LazyLogging {
 
         testProcesses(ds)
 
+        def testCount(ds: HBaseDataStore): MatchResult[_] = {
+          val query = new Query(typeName, Filter.INCLUDE, Query.NO_PROPERTIES)
+          val results = SelfClosingIterator(ds.getFeatureReader(query, Transaction.AUTO_COMMIT)).toList
+          results must haveLength(10)
+          results.map(_.getID) must containTheSameElementsAs(toAdd.map(_.getID))
+          foreach(results)(_.getAttributeCount mustEqual 0)
+        }
+
+        def testExactCount(ds: HBaseDataStore): MatchResult[_] = {
+          // without hints
+          ds.getFeatureSource(typeName).getFeatures(new Query(typeName, Filter.INCLUDE)).size() mustEqual 0
+          ds.getFeatureSource(typeName).getCount(new Query(typeName, Filter.INCLUDE)) mustEqual -1
+
+          val queryWithHint = new Query(typeName, Filter.INCLUDE)
+          queryWithHint.getHints.put(QueryHints.EXACT_COUNT, java.lang.Boolean.TRUE)
+          val queryWithViewParam = new Query(typeName, Filter.INCLUDE)
+          queryWithViewParam.getHints.put(Hints.VIRTUAL_TABLE_PARAMETERS,
+            Collections.singletonMap("EXACT_COUNT", "true"))
+
+          foreach(Seq(queryWithHint, queryWithViewParam)) { query =>
+            ds.getFeatureSource(typeName).getFeatures(query).size() mustEqual 10
+          }
+        }
+
+        testCount(ds)
+        testExactCount(ds)
+
         ds.getFeatureSource(typeName).removeFeatures(ECQL.toFilter("INCLUDE"))
 
         forall(Seq("INCLUDE",
@@ -154,7 +195,10 @@ class HBaseDataStoreTest extends HBaseTest with LazyLogging {
     "work with polys" in {
       val typeName = "testpolys"
 
-      val params = Map(ConnectionParam.getName -> connection, HBaseCatalogParam.getName -> "HBaseDataStoreTest")
+      val params = Map(
+        ConnectionParam.getName -> MiniCluster.connection,
+        HBaseCatalogParam.getName -> getClass.getSimpleName
+      )
       val ds = DataStoreFinder.getDataStore(params).asInstanceOf[HBaseDataStore]
       ds must not(beNull)
 
@@ -200,10 +244,58 @@ class HBaseDataStoreTest extends HBaseTest with LazyLogging {
       }
     }
 
+    "support updates" in {
+      val typeName = "test-updates"
+
+      val params = Map(
+        ConnectionParam.getName -> MiniCluster.connection,
+        HBaseCatalogParam.getName -> getClass.getSimpleName
+      )
+      val ds = DataStoreFinder.getDataStore(params).asInstanceOf[HBaseDataStore]
+      ds must not(beNull)
+
+      try {
+        ds.getSchema(typeName) must beNull
+
+        val spec = "name:String:index=true,age:Integer,dtg:Date,geom:Point:srid=4326"
+        ds.createSchema(SimpleFeatureTypes.createType(typeName, spec))
+        val sft = ds.getSchema(typeName)
+
+        val features = Seq(
+          ScalaSimpleFeature.create(sft, "fid1", "will", 56, "2014-01-02", "POINT(45.0 49.0)"),
+          ScalaSimpleFeature.create(sft, "fid2", "george", 33, "2014-01-02", "POINT(45.0 49.0)"),
+          ScalaSimpleFeature.create(sft, "fid3", "sue", 99, "2014-01-02", "POINT(45.0 49.0)"),
+          ScalaSimpleFeature.create(sft, "fid4", "karen", 50, "2014-01-02", "POINT(45.0 49.0)"),
+          ScalaSimpleFeature.create(sft, "fid5", "bob", 56, "2014-01-02", "POINT(45.0 49.0)")
+        )
+
+        WithClose(ds.getFeatureWriterAppend(typeName, Transaction.AUTO_COMMIT)) { writer =>
+          features.foreach(FeatureUtils.write(writer, _, useProvidedFid = true))
+        }
+
+        val fs = ds.getFeatureSource(sft.getTypeName)
+        fs.modifyFeatures("age", Int.box(60), ECQL.toFilter("(age > 50 AND age < 99) OR (name = 'karen')"))
+
+        val expected = Seq(
+          ScalaSimpleFeature.create(sft, "fid1", "will", 60, "2014-01-02", "POINT(45.0 49.0)"),
+          ScalaSimpleFeature.create(sft, "fid4", "karen", 60, "2014-01-02", "POINT(45.0 49.0)"),
+          ScalaSimpleFeature.create(sft, "fid5", "bob", 60, "2014-01-02", "POINT(45.0 49.0)")
+        )
+
+        val result = SelfClosingIterator(fs.getFeatures(ECQL.toFilter("age = 60")).features).toList.sortBy(_.getID)
+        result mustEqual expected
+      } finally {
+        ds.dispose()
+      }
+    }
+
     "support table splits" in {
       val typeName = "testsplits"
 
-      val params = Map(ConnectionParam.getName -> connection, HBaseCatalogParam.getName -> catalogTableName)
+      val params = Map(
+        ConnectionParam.getName -> MiniCluster.connection,
+        HBaseCatalogParam.getName -> getClass.getSimpleName
+      )
       val ds = DataStoreFinder.getDataStore(params).asInstanceOf[HBaseDataStore]
       ds must not(beNull)
 
@@ -217,14 +309,19 @@ class HBaseDataStoreTest extends HBaseTest with LazyLogging {
               "attr.name.pattern:[a-f],attr.age.pattern:[0-9],attr.age.pattern2:[8-8][0-9]'"))
 
         def splits(index: String): Seq[Array[Byte]] = {
-          ds.manager.index(index).getTableNames(ds.getSchema(typeName), ds, None).flatMap { table =>
-            ds.connection.getRegionLocator(TableName.valueOf(table)).getStartKeys
+          ds.manager.indices(ds.getSchema(typeName)).find(_.identifier.startsWith(index)).toSeq.flatMap { index =>
+            index.getTableNames(None).flatMap { table =>
+              ds.connection.getRegionLocator(TableName.valueOf(table)).getStartKeys
+            }
           }
         }
 
-        splits(HBaseAttributeIndex.identifier) must haveLength((6 + 10 + 10) * 4) // a-f for name, 0-9 + [8]0-9 for age * 4 shards
-        splits(HBaseZ3Index.identifier) must haveLength(16) // 2 bits * 4 shards
-        splits(HBaseIdIndex.identifier) must haveLength(4) // default 4 splits
+        splits(GeoMesaFeatureIndex.identifier(AttributeIndex.name, AttributeIndex.version, Seq("name"))) must
+            haveLength(24) // a-f * 4 shards
+        splits(GeoMesaFeatureIndex.identifier(AttributeIndex.name, AttributeIndex.version, Seq("age"))) must
+            haveLength(80) // 0-9 + [8]0-9 * 4 shards
+        splits(Z3Index.name) must haveLength(16) // 2 bits * 4 shards
+        splits(IdIndex.name) must haveLength(4) // default 4 splits
       } finally {
         ds.dispose()
       }
@@ -235,19 +332,38 @@ class HBaseDataStoreTest extends HBaseTest with LazyLogging {
       // we can't use the thread local value b/c it's loaded in an asynchronous guava cache
       SchemaProperties.CheckDistributedVersion.set("true")
       try {
-        val params = Map(ConnectionParam.getName -> connection, HBaseCatalogParam.getName -> "HBaseDistributedVersionTest")
+        val params = Map(
+          ConnectionParam.getName -> MiniCluster.connection,
+          HBaseCatalogParam.getName -> "HBaseDistributedVersionTest"
+        )
         val ds = DataStoreFinder.getDataStore(params).asInstanceOf[HBaseDataStore]
         ds must not(beNull)
 
         try {
           ds.createSchema(SimpleFeatureTypes.createType("test-version", "dtg:Date,*geom:Point:srid=4326"))
-          ds.getDistributeVersion must beSome(SemanticVersion(GeoMesaProperties.ProjectVersion))
+          ds.getDistributedVersion must beSome(SemanticVersion(GeoMesaProperties.ProjectVersion))
         } finally {
           ds.dispose()
         }
       } finally {
         SchemaProperties.CheckDistributedVersion.clear()
       }
+    }
+
+    "support configuration via path or embedded xml" in {
+      val embedded =
+        """<configuration>
+          |  <property>
+          |    <name>foo.embedded</name>
+          |    <value>bar</value>
+          |  </property>
+          |</configuration>""".stripMargin
+      val resource = new File(getClass.getClassLoader.getResource("custom-site.xml").toURI).getAbsolutePath
+      val params = Map(ConfigsParam.getName -> embedded, ConfigPathsParam.getName -> resource)
+      val conf = HBaseConnectionPool.getConfiguration(params.asJava)
+
+      conf.get("foo.embedded") mustEqual "bar"
+      conf.get("foo.resource") mustEqual "baz"
     }
   }
 
@@ -256,10 +372,15 @@ class HBaseDataStoreTest extends HBaseTest with LazyLogging {
                 filter: String,
                 transforms: Array[String],
                 results: Seq[SimpleFeature]): MatchResult[Any] = {
-    val query = new Query(typeName, ECQL.toFilter(filter), transforms)
+    testQuery(ds, new Query(typeName, ECQL.toFilter(filter), transforms), results)
+  }
+
+  def testQuery(ds: HBaseDataStore, query: Query, results: Seq[SimpleFeature], count: Boolean = true): MatchResult[Any] = {
+
     val fr = ds.getFeatureReader(query, Transaction.AUTO_COMMIT)
     val features = SelfClosingIterator(fr).toList
-    val attributes = Option(transforms).getOrElse(ds.getSchema(typeName).getAttributeDescriptors.map(_.getLocalName).toArray)
+    val attributes = Option(query.getPropertyNames)
+        .getOrElse(ds.getSchema(query.getTypeName).getAttributeDescriptors.map(_.getLocalName).toArray)
     features.map(_.getID) must containTheSameElementsAs(results.map(_.getID))
     forall(features) { feature =>
       feature.getAttributes must haveLength(attributes.length)
@@ -268,13 +389,12 @@ class HBaseDataStoreTest extends HBaseTest with LazyLogging {
         feature.getAttribute(attribute) mustEqual results.find(_.getID == feature.getID).get.getAttribute(attribute)
       }
     }
-    ds.getFeatureSource(typeName).getFeatures(query).size() mustEqual results.length
 
-    // verify ranges are grouped appropriately to not cross shard boundaries
-    forall(ds.getQueryPlan(query).flatMap(_.scans)) { scan =>
-      if (scan.getStartRow.isEmpty || scan.getStopRow.isEmpty) { ok } else {
-        scan.getStartRow()(0) mustEqual scan.getStopRow()(0)
-      }
+    if (!count) { ok } else {
+      ds.getFeatureSource(query.getTypeName).getCount(query) mustEqual -1
+      ds.getFeatureSource(query.getTypeName).getFeatures(query).size() mustEqual 0
+      query.getHints.put(QueryHints.EXACT_COUNT, true)
+      ds.getFeatureSource(query.getTypeName).getFeatures(query).size() mustEqual results.length
     }
   }
 }

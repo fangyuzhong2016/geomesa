@@ -170,9 +170,8 @@ REST Access
 ^^^^^^^^^^^
 
 The ``GeoJsonIndex`` is also exposed through a REST endpoint. Currently, the REST endpoint does not support
-updates or deletes of existing features, or transformation of resposes. Furthermore, it requires Accumulo as
-the backing data store. It may be installed in GeoServer by extracting the install file into
-``geoserver/WEB-INF/lib``:
+transformation of responses. Furthermore, it requires Accumulo as the backing data store. It may be installed
+in GeoServer by extracting the install file into ``geoserver/WEB-INF/lib``:
 
 .. code-block:: bash
 
@@ -251,7 +250,6 @@ Registers a data store to make it available for querying.
 |                 | **Optional**                                                                         |
 |                 |                                                                                      |
 |                 | * ``geomesa.security.auths=[alphanumeric]``                                          |
-|                 | * ``geomesa.security.visibilities=[alphanumeric]``                                   |
 |                 | * ``geomesa.query.timeout=[alphanumeric]``                                           |
 |                 | * ``geomesa.query.threads=[integer]``                                                |
 |                 | * ``accumulo.query.record-threads=[integer]``                                        |
@@ -261,7 +259,6 @@ Registers a data store to make it available for querying.
 |                 | * ``geomesa.query.audit=[Boolean]``                                                  |
 |                 | * ``geomesa.query.caching=[Boolean]``                                                |
 |                 | * ``geomesa.security.force-empty-auths=[Boolean]``                                   |
-|                 | * ``accumulo.mock=[Boolean]``                                                        |
 +-----------------+--------------------------------------------------------------------------------------+
 | **Success**     | **Code:** 200                                                                        |
 | **Response**    |                                                                                      |
@@ -681,6 +678,8 @@ expressions must be enclosed in double quotes.
     filter.evaluate(sf); // returns false
     sf.getAttribute("\"$.json.foo\""); // returns "baz"
     sf.getAttribute("\"$.json.bar\""); // returns null
+
+.. _json_path_filter_function:
 
 JSONPath CQL Filter Function
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^

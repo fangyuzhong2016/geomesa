@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -9,16 +9,17 @@
 
 package org.locationtech.geomesa.fs.storage.orc
 
-import com.typesafe.scalalogging.LazyLogging
-import com.vividsolutions.jts.geom.Geometry
-import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
 import org.apache.orc.TypeDescription
 import org.locationtech.geomesa.features.serialization.ObjectType
 import org.locationtech.geomesa.features.serialization.ObjectType.ObjectType
+import org.locationtech.geomesa.filter.factory.FastFilterFactory
+import org.locationtech.geomesa.fs.storage.api.FileSystemStorage.FileSystemWriter
 import org.locationtech.geomesa.fs.storage.api._
-import org.locationtech.geomesa.fs.storage.common.MetadataFileSystemStorage.WriterCallback
-import org.locationtech.geomesa.fs.storage.common.{FileSystemPathReader, MetadataFileSystemStorage, MetadataObservingFileSystemWriter}
+import org.locationtech.geomesa.fs.storage.common.AbstractFileSystemStorage
+import org.locationtech.geomesa.fs.storage.common.AbstractFileSystemStorage.FileSystemPathReader
+import org.locationtech.geomesa.fs.storage.common.observer.FileSystemObserver
+import org.locationtech.jts.geom.Geometry
 import org.opengis.feature.`type`.AttributeDescriptor
 import org.opengis.feature.simple.SimpleFeatureType
 import org.opengis.filter.Filter
@@ -28,25 +29,25 @@ import org.opengis.filter.Filter
   *
   * @param metadata metadata
   */
-class OrcFileSystemStorage(conf: Configuration, metadata: StorageMetadata)
-    extends MetadataFileSystemStorage(conf, metadata) with LazyLogging {
+class OrcFileSystemStorage(context: FileSystemContext, metadata: StorageMetadata)
+    extends AbstractFileSystemStorage(context, metadata, OrcFileSystemStorage.FileExtension) {
 
-  override protected def extension: String = OrcFileSystemStorage.FileExtension
+  override protected def createWriter(file: Path, observer: FileSystemObserver): FileSystemWriter =
+    new OrcFileSystemWriter(metadata.sft, context.conf, file, observer)
 
-  override protected def createWriter(sft: SimpleFeatureType, file: Path, cb: WriterCallback): FileSystemWriter =
-    new OrcFileSystemWriter(sft, conf, file) with MetadataObservingFileSystemWriter {
-      override def callback: WriterCallback = cb
-    }
-
-  override protected def createReader(sft: SimpleFeatureType,
-                                      filter: Option[Filter],
-                                      transform: Option[(String, SimpleFeatureType)]): FileSystemPathReader =
-    new OrcFileSystemReader(sft, conf, filter, transform)
+  override protected def createReader(
+      filter: Option[Filter],
+      transform: Option[(String, SimpleFeatureType)]): FileSystemPathReader = {
+    val optimized = filter.map(FastFilterFactory.optimize(metadata.sft, _))
+    new OrcFileSystemReader(metadata.sft, context.conf, optimized, transform)
+  }
 }
 
 object OrcFileSystemStorage {
 
-  val OrcEncoding   = "orc"
+  import scala.collection.JavaConverters._
+
+  val Encoding      = "orc"
   val FileExtension = "orc"
 
   def geometryXField(attribute: String): String = s"${attribute}_x"
@@ -82,11 +83,23 @@ object OrcFileSystemStorage {
     * @return
     */
   def fieldCount(sft: SimpleFeatureType, fid: Boolean = true): Int = {
-    import scala.collection.JavaConversions._
-    sft.getAttributeDescriptors.count(d => classOf[Geometry].isAssignableFrom(d.getType.getBinding)) +
-        sft.getAttributeCount + (if (fid) { 1 } else { 0 })
+    val attributes = sft.getAttributeDescriptors.asScala.foldLeft(0) { case (sum, d) => sum + fieldCount(d) }
+    if (fid) { attributes + 1 } else { attributes }
   }
 
+  /**
+   * Gets a count of the Orc fields created for a given attribute
+   *
+   * @param descriptor descriptor
+   * @return
+   */
+  def fieldCount(descriptor: AttributeDescriptor): Int = {
+    descriptor.getType.getBinding match {
+      // plain Geometry bindings are encoded in a single WKB column, others as x + y
+      case b if classOf[Geometry].isAssignableFrom(b) && b != classOf[Geometry] => 2
+      case _ => 1
+    }
+  }
   /**
     * Add a type description for an attribute
     *
@@ -112,8 +125,8 @@ object OrcFileSystemStorage {
   private def addGeometryDescription(container: TypeDescription, name: String, binding: ObjectType): Unit = {
     import TypeDescription.{createDouble, createList}
 
-    val x = geometryXField(name)
-    val y = geometryYField(name)
+    def x: String = geometryXField(name)
+    def y: String = geometryYField(name)
 
     binding match {
       case ObjectType.POINT =>
@@ -146,6 +159,10 @@ object OrcFileSystemStorage {
         container.addField(x, createList(createList(createList(createDouble()))))
         container.addField(y, createList(createList(createList(createDouble()))))
 
+      case ObjectType.GEOMETRY =>
+        // WKB
+        container.addField(name, TypeDescription.createBinary())
+
       case _ => throw new IllegalArgumentException(s"Unexpected geometry type $binding")
     }
   }
@@ -166,7 +183,6 @@ object OrcFileSystemStorage {
       case ObjectType.DOUBLE  => TypeDescription.createDouble()
       case ObjectType.BOOLEAN => TypeDescription.createBoolean()
       case ObjectType.BYTES   => TypeDescription.createBinary()
-      case ObjectType.JSON    => TypeDescription.createString()
       case ObjectType.UUID    => TypeDescription.createString()
       case _ => throw new IllegalArgumentException(s"Unexpected simple object type $binding")
     }

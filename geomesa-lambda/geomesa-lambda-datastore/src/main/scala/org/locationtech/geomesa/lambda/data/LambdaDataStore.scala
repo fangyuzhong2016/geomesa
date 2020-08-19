@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -18,7 +18,7 @@ import org.geotools.data._
 import org.geotools.data.simple.{SimpleFeatureReader, SimpleFeatureSource, SimpleFeatureWriter}
 import org.geotools.feature.FeatureTypes
 import org.locationtech.geomesa.accumulo.data.AccumuloDataStore
-import org.locationtech.geomesa.index.geotools.{GeoMesaFeatureCollection, GeoMesaFeatureReader, GeoMesaFeatureSource, GeoMesaFeatureStore}
+import org.locationtech.geomesa.index.geotools.{GeoMesaFeatureReader, GeoMesaFeatureStore}
 import org.locationtech.geomesa.index.stats.{GeoMesaStats, HasGeoMesaStats, NoopStats}
 import org.locationtech.geomesa.kafka.AdminUtilsVersions
 import org.locationtech.geomesa.lambda.data.LambdaDataStore.LambdaConfig
@@ -28,7 +28,8 @@ import org.locationtech.geomesa.lambda.stream.{OffsetManager, TransientStore}
 import org.locationtech.geomesa.security.AuthorizationsProvider
 import org.locationtech.geomesa.utils.collection.SelfClosingIterator
 import org.locationtech.geomesa.utils.conf.GeoMesaSystemProperties.SystemProperty
-import org.locationtech.geomesa.utils.io.CloseWithLogging
+import org.locationtech.geomesa.utils.geotools.FeatureUtils
+import org.locationtech.geomesa.utils.io.{CloseWithLogging, WithClose}
 import org.opengis.feature.`type`.Name
 import org.opengis.feature.simple.SimpleFeatureType
 import org.opengis.filter.Filter
@@ -43,8 +44,10 @@ class LambdaDataStore(val persistence: DataStore,
                      (implicit clock: Clock = Clock.systemUTC())
     extends DataStore with HasGeoMesaStats with LazyLogging {
 
+  import scala.collection.JavaConverters._
+
   private val authProvider: Option[AuthorizationsProvider] = persistence match {
-    case ds: AccumuloDataStore => Some(ds.config.authProvider.authProvider)
+    case ds: AccumuloDataStore => Some(ds.config.authProvider)
     case _ => None
   }
 
@@ -60,12 +63,9 @@ class LambdaDataStore(val persistence: DataStore,
     case _ => NoopStats
   }
 
-  private val runner = new LambdaQueryRunner(persistence, transients, stats)
+  private val runner = new LambdaQueryRunner(this, persistence, transients)
 
   def persist(typeName: String): Unit = transients.get(typeName).persist()
-
-  protected def createFeatureCollection(query: Query, source: GeoMesaFeatureSource): GeoMesaFeatureCollection =
-    new LambdaFeatureCollection(source, query)
 
   override def getTypeNames: Array[String] = persistence.getTypeNames
 
@@ -101,7 +101,21 @@ class LambdaDataStore(val persistence: DataStore,
     updateSchema(typeName.getLocalPart, featureType)
 
   override def updateSchema(typeName: String, featureType: SimpleFeatureType): Unit = {
-    CloseWithLogging(transients.get(typeName))
+    val transient = transients.get(typeName)
+    if (typeName != featureType.getTypeName) {
+      // ensure that we've loaded the entire kafka topic
+      logger.debug("Update schema: entering quiet period")
+      Thread.sleep(SystemProperty("geomesa.lambda.update.quiet.period", "10 seconds").toDuration.get.toMillis)
+      WithClose(transient.read()) { toPersist =>
+        if (toPersist.nonEmpty) {
+          logger.debug("Update schema: persisting transient features")
+          WithClose(persistence.getFeatureWriter(typeName, Transaction.AUTO_COMMIT)) { writer =>
+            toPersist.foreach(FeatureUtils.write(writer, _, useProvidedFid = true))
+          }
+        }
+      }
+    }
+    CloseWithLogging(transient)
     transients.invalidate(typeName)
     persistence.updateSchema(typeName, featureType)
   }
@@ -120,7 +134,7 @@ class LambdaDataStore(val persistence: DataStore,
   override def getFeatureSource(typeName: Name): SimpleFeatureSource = getFeatureSource(typeName.getLocalPart)
 
   override def getFeatureSource(typeName: String): SimpleFeatureSource =
-    new GeoMesaFeatureStore(this, getSchema(typeName), runner, createFeatureCollection)
+    new GeoMesaFeatureStore(this, getSchema(typeName), runner)
 
   override def getFeatureReader(query: Query, transaction: Transaction): SimpleFeatureReader =
     GeoMesaFeatureReader(getSchema(query.getTypeName), query, runner, None, None)
@@ -140,8 +154,7 @@ class LambdaDataStore(val persistence: DataStore,
   }
 
   override def dispose(): Unit = {
-    import scala.collection.JavaConversions._
-    transients.asMap().values().foreach(CloseWithLogging.apply)
+    CloseWithLogging(transients.asMap.asScala.values)
     transients.invalidateAll()
     CloseWithLogging(offsetManager)
     CloseWithLogging(producer)
@@ -164,6 +177,5 @@ object LambdaDataStore {
                           partitions: Int,
                           consumers: Int,
                           expiry: Duration,
-                          visibility: Option[String],
                           persist: Boolean)
 }

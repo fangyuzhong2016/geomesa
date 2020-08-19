@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -8,26 +8,26 @@
 
 package org.locationtech.geomesa.convert
 
-import org.locationtech.geomesa.convert.Modes.ParseMode.Incremental
 import org.locationtech.geomesa.utils.conf.GeoMesaSystemProperties.SystemProperty
 
 trait Modes {
+
   this: Enumeration =>
 
   type Mode
+
   protected def defaultValue: Mode
+
   def systemProperty: SystemProperty
 
   def apply(): Mode = {
     val string = systemProperty.get
-    this.values.find(_.toString.equalsIgnoreCase(string)) match {
-      case Some(v)=> v.asInstanceOf[Mode]
-      case None => defaultValue
-    }
+    values.find(_.toString.equalsIgnoreCase(string)).map(_.asInstanceOf[Mode]).getOrElse(defaultValue)
   }
 }
 
 object Modes {
+
   type ErrorMode = ErrorMode.Value
   type ParseMode = ParseMode.Value
   type LineMode  = LineMode.Value
@@ -54,7 +54,6 @@ object Modes {
       SystemProperty("geomesa.converter.parse.mode.default", defaultValue.toString)
   }
 
-
   object LineMode extends Enumeration with Modes {
     type Mode = Modes.LineMode
     val Single : LineMode = Value("single")
@@ -65,5 +64,4 @@ object Modes {
     override val systemProperty: SystemProperty =
       SystemProperty("geomesa.converter.line.mode.default", defaultValue.toString)
   }
-
 }

@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -11,12 +11,14 @@ package org.locationtech.geomesa.fs.storage.orc.utils
 import java.nio.charset.StandardCharsets
 import java.util.UUID
 
-import com.vividsolutions.jts.geom._
 import org.apache.hadoop.io._
 import org.apache.orc.TypeDescription
 import org.apache.orc.mapred.{OrcList, OrcMap, OrcStruct, OrcTimestamp}
 import org.locationtech.geomesa.features.serialization.ObjectType
 import org.locationtech.geomesa.features.serialization.ObjectType.ObjectType
+import org.locationtech.geomesa.fs.storage.orc.OrcFileSystemStorage
+import org.locationtech.geomesa.utils.text.WKBUtils
+import org.locationtech.jts.geom._
 import org.opengis.feature.simple.{SimpleFeature, SimpleFeatureType}
 
 trait OrcOutputFormatWriter {
@@ -32,9 +34,10 @@ object OrcOutputFormatWriter {
     var i = 0
     var col = 0
     while (i < sft.getAttributeCount) {
-      val bindings = ObjectType.selectType(sft.getDescriptor(i))
+      val descriptor = sft.getDescriptor(i)
+      val bindings = ObjectType.selectType(descriptor)
       val reader = bindings.head match {
-        case ObjectType.GEOMETRY => col += 1; createGeometryWriter(bindings(1), col - 1, col, i, description)
+        case ObjectType.GEOMETRY => createGeometryWriter(bindings(1), col, i, description)
         case ObjectType.DATE     => new DateOutputFormatWriter(col, i)
         case ObjectType.STRING   => new StringOutputFormatWriter(col, i)
         case ObjectType.INT      => new IntOutputFormatWriter(col, i)
@@ -43,7 +46,6 @@ object OrcOutputFormatWriter {
         case ObjectType.DOUBLE   => new DoubleOutputFormatWriter(col, i)
         case ObjectType.BOOLEAN  => new BooleanOutputFormatWriter(col, i)
         case ObjectType.BYTES    => new BytesOutputFormatWriter(col, i)
-        case ObjectType.JSON     => new StringOutputFormatWriter(col, i)
         case ObjectType.UUID     => new UuidOutputFormatWriter(col, i)
         case ObjectType.LIST     => new ListOutputFormatWriter(col, i, bindings(1), description)
         case ObjectType.MAP      => new MapOutputFormatWriter(col, i, bindings(1), bindings(2), description)
@@ -51,7 +53,7 @@ object OrcOutputFormatWriter {
       }
       builder += reader
       i += 1
-      col += 1
+      col += OrcFileSystemStorage.fieldCount(descriptor)
     }
 
     if (fid) {
@@ -61,16 +63,19 @@ object OrcOutputFormatWriter {
     new SequenceOutputFormatWriter(builder.result)
   }
 
-  private def createGeometryWriter(binding: ObjectType,
-                                   x: Int, y: Int, i: Int,
-                                   description: TypeDescription): OrcOutputFormatWriter = {
+  private def createGeometryWriter(
+      binding: ObjectType,
+      col: Int,
+      i: Int,
+      description: TypeDescription): OrcOutputFormatWriter = {
     binding match {
-      case ObjectType.POINT           => new PointOutputFormatWriter(x, y, i)
-      case ObjectType.LINESTRING      => new LineStringOutputFormatWriter(x, y, i, description)
-      case ObjectType.MULTIPOINT      => new MultiPointOutputFormatWriter(x, y, i, description)
-      case ObjectType.POLYGON         => new PolygonOutputFormatWriter(x, y, i, description)
-      case ObjectType.MULTILINESTRING => new MultiLineStringOutputFormatWriter(x, y, i, description)
-      case ObjectType.MULTIPOLYGON    => new MultiPolygonOutputFormatWriter(x, y, i, description)
+      case ObjectType.POINT           => new PointOutputFormatWriter(col, col + 1, i)
+      case ObjectType.LINESTRING      => new LineStringOutputFormatWriter(col, col + 1, i, description)
+      case ObjectType.MULTIPOINT      => new MultiPointOutputFormatWriter(col, col + 1, i, description)
+      case ObjectType.POLYGON         => new PolygonOutputFormatWriter(col, col + 1, i, description)
+      case ObjectType.MULTILINESTRING => new MultiLineStringOutputFormatWriter(col, col + 1, i, description)
+      case ObjectType.MULTIPOLYGON    => new MultiPolygonOutputFormatWriter(col, col + 1, i, description)
+      case ObjectType.GEOMETRY        => new GeometryWkbOutputFormatWriter(col, i)
       case _ => throw new IllegalArgumentException(s"Unexpected geometry type $binding")
     }
   }
@@ -395,6 +400,20 @@ object OrcOutputFormatWriter {
     }
   }
 
+  class GeometryWkbOutputFormatWriter(val col: Int, val attribute: Int) extends OutputFormatWriterAdapter {
+    def setValue(value: AnyRef, existing: WritableComparable[_]): WritableComparable[_] = {
+      if (value == null) { null } else {
+        var field = existing.asInstanceOf[BytesWritable]
+        if (field == null) {
+          field = new BytesWritable
+        }
+        val bytes = WKBUtils.write(value.asInstanceOf[Geometry])
+        field.set(bytes, 0, bytes.length)
+        field
+      }
+    }
+  }
+
   class ListOutputFormatWriter(col: Int, attribute: Int, binding: ObjectType, description: TypeDescription)
       extends OrcOutputFormatWriter {
     private val converter = getConverter(binding)
@@ -589,7 +608,6 @@ object OrcOutputFormatWriter {
       case ObjectType.DOUBLE   => new SetOutputFormatDouble {}
       case ObjectType.BOOLEAN  => new SetOutputFormatBoolean {}
       case ObjectType.BYTES    => new SetOutputFormatBytes {}
-      case ObjectType.JSON     => new SetOutputFormatString {}
       case ObjectType.UUID     => new SetOutputFormatUuid {}
       case _ => throw new IllegalArgumentException(s"Unexpected object type $binding")
     }

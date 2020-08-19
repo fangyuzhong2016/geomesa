@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -14,7 +14,7 @@ import java.util.Date
 import com.typesafe.scalalogging.LazyLogging
 import org.apache.arrow.memory.{BufferAllocator, RootAllocator}
 import org.geotools.data.{DataStoreFinder, DataUtilities, Query, Transaction}
-import org.geotools.factory.Hints
+import org.geotools.util.factory.Hints
 import org.locationtech.geomesa.arrow.io.SimpleFeatureArrowFileReader
 import org.locationtech.geomesa.features.ScalaSimpleFeature
 import org.locationtech.geomesa.index.conf.QueryHints
@@ -43,7 +43,7 @@ class LambdaDataStoreTest extends LambdaTest with LazyLogging {
 
   implicit val allocator: BufferAllocator = new RootAllocator(Long.MaxValue)
 
-  val sft = SimpleFeatureTypes.createType("lambda", "name:String,dtg:Date,*geom:Point:srid=4326")
+  val sft = SimpleFeatureTypes.createImmutableType("lambda", "name:String,dtg:Date,*geom:Point:srid=4326")
   val features = Seq(
     ScalaSimpleFeature.create(sft, "0", "n0", "2017-06-15T00:00:00.000Z", "POINT (45 50)"),
     ScalaSimpleFeature.create(sft, "1", "n1", "2017-06-15T00:00:01.000Z", "POINT (46 51)")
@@ -130,15 +130,14 @@ class LambdaDataStoreTest extends LambdaTest with LazyLogging {
 
           WithClose(ds.getFeatureWriterAppend(sft.getTypeName, Transaction.AUTO_COMMIT)) { writer =>
             features.foreach { feature =>
-              FeatureUtils.copyToWriter(writer, feature, useProvidedFid = true)
-              writer.write()
+              FeatureUtils.write(writer, feature, useProvidedFid = true)
               clock.tick = clock.millis + 50
             }
           }
 
           // test queries against the transient store
           forall(Seq(ds, readOnly)) { store =>
-            eventually(40, 100.millis)(store.transients.get(sft.getTypeName).read().toSeq must
+            eventually(40, 100.millis)(SelfClosingIterator(store.transients.get(sft.getTypeName).read()).toSeq must
                 containTheSameElementsAs(features))
             SelfClosingIterator(store.getFeatureReader(new Query(sft.getTypeName), Transaction.AUTO_COMMIT)).toSeq must
                 containTheSameElementsAs(features)
@@ -153,7 +152,8 @@ class LambdaDataStoreTest extends LambdaTest with LazyLogging {
           ds.persist(sft.getTypeName)
           // test mixed queries against both stores
           forall(Seq(ds, readOnly)) { store =>
-            eventually(40, 100.millis)(store.transients.get(sft.getTypeName).read().toSeq must beEqualTo(features.drop(1)))
+            eventually(40, 100.millis)(SelfClosingIterator(store.transients.get(sft.getTypeName).read()).toSeq must
+                beEqualTo(features.drop(1)))
             SelfClosingIterator(store.getFeatureReader(new Query(sft.getTypeName), Transaction.AUTO_COMMIT)).toSeq must
                 containTheSameElementsAs(features)
           }
@@ -180,7 +180,7 @@ class LambdaDataStoreTest extends LambdaTest with LazyLogging {
           ds.persist(sft.getTypeName)
           // test queries against the persistent store
           forall(Seq(ds, readOnly)) { store =>
-            eventually(40, 100.millis)(store.transients.get(sft.getTypeName).read() must beEmpty)
+            eventually(40, 100.millis)(SelfClosingIterator(store.transients.get(sft.getTypeName).read()) must beEmpty)
             SelfClosingIterator(store.getFeatureReader(new Query(sft.getTypeName), Transaction.AUTO_COMMIT)).toSeq must
                 containTheSameElementsAs(features)
           }

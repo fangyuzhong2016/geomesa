@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -11,7 +11,7 @@ package org.locationtech.geomesa.accumulo.iterators
 import java.time.{ZoneOffset, ZonedDateTime}
 
 import com.typesafe.scalalogging.LazyLogging
-import com.vividsolutions.jts.geom.Polygon
+import org.locationtech.jts.geom.Polygon
 import org.geotools.data.Query
 import org.geotools.data.simple.SimpleFeatureCollection
 import org.geotools.filter.text.ecql.ECQL
@@ -76,10 +76,10 @@ class MultiIteratorTest extends Specification with TestWithMultipleSfts with Laz
     }
   }
 
-  "Mock Accumulo with fullData" should {
+  "Accumulo with fullData" should {
     val sft = createNewSchema(spec)
     val features = TestData.fullData.map(createSF(_, sft))
-    addFeatures(sft, features)
+    addFeatures(features)
     val fs = ds.getFeatureSource(sft.getTypeName)
 
     "return the same result for our iterators" in {
@@ -122,10 +122,10 @@ class MultiIteratorTest extends Specification with TestWithMultipleSfts with Laz
     }
   }
 
-  "Mock Accumulo with a small table" should {
+  "Accumulo with a small table" should {
     val sft = createNewSchema(spec)
     val features = TestData.shortListOfPoints.map(createSF(_, sft))
-    addFeatures(sft, features)
+    addFeatures(features)
     val fs = ds.getFeatureSource(sft.getTypeName)
 
     "cover corner cases" in {
@@ -143,10 +143,10 @@ class MultiIteratorTest extends Specification with TestWithMultipleSfts with Laz
     }
   }
 
-  "Realistic Mock Accumulo" should {
+  "Realistic Accumulo" should {
     val sft = createNewSchema(spec)
     val features = (TestData.shortListOfPoints ++ TestData.geohashHitActualNotHit).map(createSF(_, sft))
-    addFeatures(sft, features)
+    addFeatures(features)
     val fs = ds.getFeatureSource(sft.getTypeName)
 
     "handle edge intersection false positives" in {
@@ -162,10 +162,10 @@ class MultiIteratorTest extends Specification with TestWithMultipleSfts with Laz
     }
   }
 
-  "Large Mock Accumulo" should {
+  "Large Accumulo" should {
     val sft = createNewSchema(spec)
     val features = TestData.hugeData.map(createSF(_, sft))
-    addFeatures(sft, features)
+    addFeatures(features)
     val fs = ds.getFeatureSource(sft.getTypeName)
 
     "return a partial results-set with a meaningful attribute-filter" in {
@@ -242,7 +242,7 @@ class MultiIteratorTest extends Specification with TestWithMultipleSfts with Laz
     val features: Seq[SimpleFeature] = wkts.zipWithIndex.map {
       case (wkt, i) => createSF(Entry(wkt, s"fid_$i"), sft)
     }
-    addFeatures(sft, features)
+    addFeatures(features)
     val fs = ds.getFeatureSource(sft.getTypeName)
 
     def doesQueryRun(filterString: String, optExpectedCount: Option[Int] = None): Boolean = {

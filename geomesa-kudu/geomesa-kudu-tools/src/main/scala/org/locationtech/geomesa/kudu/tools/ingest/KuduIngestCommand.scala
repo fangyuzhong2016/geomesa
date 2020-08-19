@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -8,28 +8,15 @@
 
 package org.locationtech.geomesa.kudu.tools.ingest
 
-import java.io.File
-
 import com.beust.jcommander.Parameters
-import org.apache.kudu.client.KuduClient
 import org.locationtech.geomesa.kudu.data.KuduDataStore
-import org.locationtech.geomesa.kudu.tools.KuduDataStoreCommand
-import org.locationtech.geomesa.kudu.tools.KuduDataStoreCommand.KuduParams
+import org.locationtech.geomesa.kudu.tools.KuduDataStoreCommand.{KuduDistributedCommand, KuduParams}
 import org.locationtech.geomesa.kudu.tools.ingest.KuduIngestCommand.KuduIngestParams
-import org.locationtech.geomesa.tools.ingest.{IngestCommand, IngestParams}
-import org.locationtech.geomesa.utils.classpath.ClassPathUtils
+import org.locationtech.geomesa.tools.ingest.IngestCommand
+import org.locationtech.geomesa.tools.ingest.IngestCommand.IngestParams
 
-class KuduIngestCommand extends IngestCommand[KuduDataStore] with KuduDataStoreCommand {
-
+class KuduIngestCommand extends IngestCommand[KuduDataStore] with KuduDistributedCommand {
   override val params = new KuduIngestParams()
-
-  override val libjarsFile: String = "org/locationtech/geomesa/kudu/tools/ingest-libjars.list"
-
-  override def libjarsPaths: Iterator[() => Seq[File]] = Iterator(
-    () => ClassPathUtils.getJarsFromEnvironment("GEOMESA_KUDU_HOME"),
-    () => ClassPathUtils.getJarsFromClasspath(classOf[KuduDataStore]),
-    () => ClassPathUtils.getJarsFromClasspath(classOf[KuduClient])
-  )
 }
 
 object KuduIngestCommand {

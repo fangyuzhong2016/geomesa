@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -8,6 +8,7 @@
 
 package org.locationtech.geomesa.jobs.interop.mapreduce;
 
+import org.apache.hadoop.conf.Configuration;
 import org.apache.hadoop.io.Text;
 import org.apache.hadoop.mapreduce.Job;
 import org.apache.hadoop.mapreduce.JobContext;
@@ -17,11 +18,13 @@ import org.apache.hadoop.mapreduce.RecordWriter;
 import org.apache.hadoop.mapreduce.TaskAttemptContext;
 import org.locationtech.geomesa.jobs.mapreduce.GeoMesaOutputFormat$;
 import org.opengis.feature.simple.SimpleFeature;
+import org.opengis.feature.simple.SimpleFeatureType;
 import scala.Predef;
 import scala.Tuple2;
 import scala.collection.JavaConverters;
 
 import java.io.IOException;
+import java.util.List;
 import java.util.Map;
 
 /**
@@ -52,11 +55,10 @@ public class GeoMesaOutputFormat extends OutputFormat<Text, SimpleFeature> {
         return delegate.getOutputCommitter(context);
     }
 
-    @SuppressWarnings("unchecked")
-    public static void configureDataStore(Job job, Map<String, String> dataStoreParams) {
+    public static void setOutput(Configuration conf, Map<String, String> dataStoreParams, SimpleFeatureType type) {
         Object m = JavaConverters.mapAsScalaMapConverter(dataStoreParams).asScala();
         scala.collection.immutable.Map<String, String> scalaParams =
-                ((scala.collection.mutable.Map<String, String>) m).toMap(Predef.<Tuple2<String, String>>conforms());
-        GeoMesaOutputFormat$.MODULE$.configureDataStore(job, scalaParams);
+              ((scala.collection.mutable.Map<String, String>) m).toMap(Predef.<Tuple2<String, String>>conforms());
+        GeoMesaOutputFormat$.MODULE$.setOutput(conf, scalaParams, type, scala.Option.apply(null));
     }
 }

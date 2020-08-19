@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -58,7 +58,7 @@ trait RemoveSchemaCommand[DS <: DataStore] extends DataStoreCommand[DS] {
   }
 
   protected def promptConfirm(featureNames: Seq[String]): Boolean =
-    Prompt.confirm(s"Remove schema(s) ${featureNames.mkString(", ")}? (yes/no): ")
+    Prompt.confirm(s"Remove schema(s) ${featureNames.mkString(", ")} (y/n)? ")
 
 }
 

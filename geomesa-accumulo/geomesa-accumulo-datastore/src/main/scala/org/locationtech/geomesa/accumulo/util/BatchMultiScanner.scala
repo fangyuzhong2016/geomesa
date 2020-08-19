@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -13,38 +13,41 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.{Executors, Future, LinkedBlockingQueue, TimeUnit}
 
 import com.typesafe.scalalogging.LazyLogging
-import org.apache.accumulo.core.client.ScannerBase
+import org.apache.accumulo.core.client.{Connector, ScannerBase}
 import org.apache.accumulo.core.data.{Key, Value}
-import org.locationtech.geomesa.accumulo.data.AccumuloDataStore
-import org.locationtech.geomesa.accumulo.index.AccumuloQueryPlan.JoinFunction
-import org.locationtech.geomesa.accumulo.index.BatchScanPlan
+import org.apache.accumulo.core.security.Authorizations
+import org.locationtech.geomesa.accumulo.data.AccumuloQueryPlan.{BatchScanPlan, JoinFunction}
+import org.locationtech.geomesa.index.utils.ThreadManagement.Timeout
+import org.locationtech.geomesa.utils.collection.CloseableIterator
 
 import scala.collection.JavaConversions._
 
 /**
   * Runs a join scan against two tables
   *
-  * @param ds data store
+  * @param connector connector
   * @param in input scan
   * @param join join scan
   * @param joinFunction maps results of input scan to ranges for join scan
+  * @param auths scan authorizations
   * @param numThreads threads
   * @param batchSize batch size
   */
-class BatchMultiScanner(ds: AccumuloDataStore,
-                        in: ScannerBase,
-                        join: BatchScanPlan,
-                        joinFunction: JoinFunction,
-                        numThreads: Int = 12,
-                        batchSize: Int = 32768)
-  extends Iterable[java.util.Map.Entry[Key, Value]] with AutoCloseable with LazyLogging {
+class BatchMultiScanner(
+    connector: Connector,
+    in: ScannerBase,
+    join: BatchScanPlan,
+    joinFunction: JoinFunction,
+    auths: Authorizations,
+    timeout: Option[Timeout],
+    numThreads: Int = 12,
+    batchSize: Int = 32768
+  ) extends CloseableIterator[java.util.Map.Entry[Key, Value]] with LazyLogging {
 
   require(batchSize > 0, f"Illegal batchSize ($batchSize%d). Value must be > 0")
   require(numThreads > 0, f"Illegal numThreads ($numThreads%d). Value must be > 0")
   logger.trace(f"Creating BatchMultiScanner with batchSize $batchSize%d and numThreads $numThreads%d")
 
-  // calculate authorizations up front so that our multi-threading doesn't mess up auth providers
-  private val auths = Option(ds.auths)
   private val executor = Executors.newFixedThreadPool(numThreads)
 
   private val inQ  = new LinkedBlockingQueue[Entry[Key, Value]](batchSize)
@@ -52,6 +55,30 @@ class BatchMultiScanner(ds: AccumuloDataStore,
 
   private val inDone  = new AtomicBoolean(false)
   private val outDone = new AtomicBoolean(false)
+
+  private var prefetch: Entry[Key, Value] = _
+
+  private def prefetchIfNull(): Unit = {
+    // loop while we might have another and we haven't set prefetch
+    while (prefetch == null && (!outDone.get || outQ.size > 0)) {
+      prefetch = outQ.poll(5, TimeUnit.MILLISECONDS)
+    }
+  }
+
+  // must attempt a prefetch since we don't know whether or not the outQ
+  // will actually be filled with an item (filters may not match and the
+  // in scanner may never return a range)
+  override def hasNext(): Boolean = {
+    prefetchIfNull()
+    prefetch != null
+  }
+
+  override def next(): Entry[Key, Value] = {
+    prefetchIfNull()
+    val ret = prefetch
+    prefetch = null
+    ret
+  }
 
   executor.submit(new Runnable {
     override def run(): Unit = {
@@ -74,7 +101,7 @@ class BatchMultiScanner(ds: AccumuloDataStore,
             inQ.drainTo(entries)
             val task = executor.submit(new Runnable {
               override def run(): Unit = {
-                val iterator = join.copy(ranges = entries.map(joinFunction)).scanEntries(ds, auths)
+                val iterator = join.copy(ranges = entries.map(joinFunction)).scan(connector, auths, timeout)
                 try {
                   iterator.foreach(outQ.put)
                 } finally {
@@ -100,32 +127,5 @@ class BatchMultiScanner(ds: AccumuloDataStore,
       executor.shutdownNow()
     }
     in.close()
-  }
-
-  override def iterator: Iterator[Entry[Key, Value]] = new Iterator[Entry[Key, Value]] {
-
-    private var prefetch: Entry[Key, Value] = _
-
-    private def prefetchIfNull(): Unit = {
-      // loop while we might have another and we haven't set prefetch
-      while (prefetch == null && (!outDone.get || outQ.size > 0)) {
-        prefetch = outQ.poll(5, TimeUnit.MILLISECONDS)
-      }
-    }
-
-    // must attempt a prefetch since we don't know whether or not the outQ
-    // will actually be filled with an item (filters may not match and the
-    // in scanner may never return a range)
-    override def hasNext(): Boolean = {
-      prefetchIfNull()
-      prefetch != null
-    }
-
-    override def next(): Entry[Key, Value] = {
-      prefetchIfNull()
-      val ret = prefetch
-      prefetch = null
-      ret
-    }
   }
 }

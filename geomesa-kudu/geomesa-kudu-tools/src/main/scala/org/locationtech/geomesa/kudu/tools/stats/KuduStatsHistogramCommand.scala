@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -13,7 +13,8 @@ import org.locationtech.geomesa.kudu.data.KuduDataStore
 import org.locationtech.geomesa.kudu.tools.KuduDataStoreCommand
 import org.locationtech.geomesa.kudu.tools.KuduDataStoreCommand.KuduParams
 import org.locationtech.geomesa.kudu.tools.stats.KuduStatsHistogramCommand.KuduStatsHistogramParams
-import org.locationtech.geomesa.tools.stats.{StatsHistogramCommand, StatsHistogramParams}
+import org.locationtech.geomesa.tools.stats.StatsHistogramCommand
+import org.locationtech.geomesa.tools.stats.StatsHistogramCommand.StatsHistogramParams
 
 class KuduStatsHistogramCommand extends StatsHistogramCommand[KuduDataStore] with KuduDataStoreCommand {
   override val params = new KuduStatsHistogramParams

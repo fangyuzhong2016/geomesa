@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -12,7 +12,7 @@ import java.util.{Map => JMap}
 import java.io.Serializable
 
 import com.typesafe.scalalogging.LazyLogging
-import com.vividsolutions.jts.geom.Point
+import org.locationtech.jts.geom.Point
 import org.apache.spark.sql.{DataFrame, SQLContext, SQLTypes, SparkSession}
 import org.geotools.data.{DataStore, DataStoreFinder}
 import org.geotools.geometry.jts.JTSFactoryFinder
@@ -83,7 +83,7 @@ class SparkSQLSpatialRelationshipsTest extends Specification with LazyLogging {
         .options(dsParams)
         .option("geomesa.feature", "points")
         .load()
-      logger.info(dfPoints.schema.treeString)
+      logger.debug(dfPoints.schema.treeString)
       dfPoints.createOrReplaceTempView("points")
 
       SparkSQLTestUtils.ingestGeometries(ds, "lines", lines)
@@ -92,7 +92,7 @@ class SparkSQLSpatialRelationshipsTest extends Specification with LazyLogging {
         .options(dsParams)
         .option("geomesa.feature", "lines")
         .load()
-      logger.info(dfLines.schema.treeString)
+      logger.debug(dfLines.schema.treeString)
       dfLines.createOrReplaceTempView("lines")
 
       SparkSQLTestUtils.ingestGeometries(ds, "boxes", boxes)
@@ -101,7 +101,7 @@ class SparkSQLSpatialRelationshipsTest extends Specification with LazyLogging {
         .options(dsParams)
         .option("geomesa.feature", "boxes")
         .load()
-      logger.info(dfBoxes.schema.treeString)
+      logger.debug(dfBoxes.schema.treeString)
       dfBoxes.createOrReplaceTempView("boxes")
     }
 

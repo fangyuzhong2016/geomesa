@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -60,9 +60,9 @@ class AvroConverterTest extends Specification with AvroUtils with LazyLogging {
         sf.getAttributeCount must be equalTo 2
         sf.getAttribute("dtg") must not(beNull)
 
-        ec.counter.getFailure mustEqual 0L
-        ec.counter.getSuccess mustEqual 1L
-        ec.counter.getLineCount mustEqual 1L  // only 1 record passed in itr
+        ec.failure.getCount mustEqual 0L
+        ec.success.getCount mustEqual 1L
+        ec.line mustEqual 1L  // only 1 record passed in itr
       }
     }
 
@@ -96,13 +96,13 @@ class AvroConverterTest extends Specification with AvroUtils with LazyLogging {
         sf.getAttribute("dtg") must not(beNull)
         sf.getUserData.get("my.user.key") mustEqual 45d
 
-        ec.counter.getFailure mustEqual 0L
-        ec.counter.getSuccess mustEqual 1L
-        ec.counter.getLineCount mustEqual 1L  // only 1 record passed in itr
+        ec.failure.getCount mustEqual 0L
+        ec.success.getCount mustEqual 1L
+        ec.line mustEqual 1L  // only 1 record passed in itr
       }
     }
 
-    "make avro bytes available as $0" >> {
+    "make avro bytes available as $0 with defined schemas" >> {
       val conf = ConfigFactory.parseString(
         """
           | {
@@ -132,9 +132,52 @@ class AvroConverterTest extends Specification with AvroUtils with LazyLogging {
           sf.getAttribute("dtg") must not(beNull)
         }
 
-        ec.counter.getFailure mustEqual 0L
-        ec.counter.getSuccess mustEqual 2L
-        ec.counter.getLineCount mustEqual 2L
+        ec.failure.getCount mustEqual 0L
+        ec.success.getCount mustEqual 2L
+        ec.line mustEqual 2L
+      }
+    }
+
+    "make avro bytes available as $0 with embedded schemas" >> {
+      val conf = ConfigFactory.parseString(
+        """
+          | {
+          |   type        = "avro"
+          |   sft         = "testsft"
+          |   schema      = "embedded"
+          |   id-field    = "md5($0)"
+          |   fields = [
+          |     { name = "tobj", transform = "avroPath($1, '/content$type=TObj')" },
+          |     { name = "dtg",  transform = "date('yyyy-MM-dd', avroPath($tobj, '/kvmap[$k=dtg]/v'))" },
+          |     { name = "lat",  transform = "avroPath($tobj, '/kvmap[$k=lat]/v')" },
+          |     { name = "lon",  transform = "avroPath($tobj, '/kvmap[$k=lon]/v')" },
+          |     { name = "geom", transform = "point($lon, $lat)" }
+          |   ]
+          | }
+        """.stripMargin)
+
+      val out = new ByteArrayOutputStream()
+      WithClose(new DataFileWriter(writer)) { fileWriter =>
+        fileWriter.create(schema, out)
+        fileWriter.append(obj)
+        fileWriter.append(obj)
+      }
+
+      WithClose(SimpleFeatureConverter(sft, conf)) { converter =>
+        val ec = converter.createEvaluationContext()
+
+        // pass two messages to check message buffering for record bytes
+        val res = WithClose(converter.process(new ByteArrayInputStream(out.toByteArray), ec))(_.toList)
+        res must haveLength(2)
+        foreach(res) { sf =>
+          sf.getID mustEqual Hashing.md5().hashBytes(bytes).toString
+          sf.getAttributeCount must be equalTo 2
+          sf.getAttribute("dtg") must not(beNull)
+        }
+
+        ec.failure.getCount mustEqual 0L
+        ec.success.getCount mustEqual 2L
+        ec.line mustEqual 2L
       }
     }
 

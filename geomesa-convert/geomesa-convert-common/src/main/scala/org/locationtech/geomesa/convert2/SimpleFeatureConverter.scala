@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -9,12 +9,11 @@
 package org.locationtech.geomesa.convert2
 
 import java.io.{Closeable, InputStream}
-import java.util.ServiceLoader
 
 import com.typesafe.config.Config
-import com.typesafe.scalalogging.StrictLogging
-import org.locationtech.geomesa.convert
+import com.typesafe.scalalogging.{LazyLogging, StrictLogging}
 import org.locationtech.geomesa.convert._
+import org.locationtech.geomesa.utils.classpath.ServiceLoader
 import org.locationtech.geomesa.utils.collection.CloseableIterator
 import org.locationtech.geomesa.utils.geotools.SimpleFeatureTypeLoader
 import org.locationtech.geomesa.utils.io.WithClose
@@ -23,7 +22,9 @@ import org.opengis.feature.simple.{SimpleFeature, SimpleFeatureType}
 /**
   * Converts input streams into simple features
   */
-trait SimpleFeatureConverter extends Closeable {
+trait SimpleFeatureConverter extends Closeable with LazyLogging {
+
+  import scala.collection.JavaConverters._
 
   /**
     * Result feature type
@@ -40,27 +41,28 @@ trait SimpleFeatureConverter extends Closeable {
   def process(is: InputStream, ec: EvaluationContext = createEvaluationContext()): CloseableIterator[SimpleFeature]
 
   /**
-    * Creates a context used for processing
+    * Create a context used for local state while processing
+    *
+    * @param globalParams global key-values to make accessible through the evaluation context
+    * @return
     */
-  def createEvaluationContext(globalParams: Map[String, Any] = Map.empty,
-                              caches: Map[String, EnrichmentCache] = Map.empty,
-                              counter: Counter = new DefaultCounter): EvaluationContext = {
-    val keys = globalParams.keys.toIndexedSeq
-    val values = keys.map(globalParams.apply).toArray
-    EvaluationContext(keys, values, counter, caches)
-  }
+  def createEvaluationContext(globalParams: Map[String, Any] = Map.empty): EvaluationContext
+
+  /**
+    * Java API for `createEvaluationContext`
+    *
+    * @param globalParams global params, accessible in the converter for each input
+    * @return
+    */
+  final def createEvaluationContext(globalParams: java.util.Map[String, Any]): EvaluationContext =
+    createEvaluationContext(globalParams.asScala.toMap)
 }
 
 object SimpleFeatureConverter extends StrictLogging {
 
-  import scala.collection.JavaConverters._
+  val factories: List[SimpleFeatureConverterFactory] = ServiceLoader.load[SimpleFeatureConverterFactory]()
 
-  private val factories = ServiceLoader.load(classOf[SimpleFeatureConverterFactory]).asScala.toList
-
-  private val factoriesV1 = ServiceLoader.load(classOf[convert.SimpleFeatureConverterFactory[_]]).asScala.toList
-
-  logger.debug(s"Found ${factories.size + factoriesV1.size} factories: " +
-      (factories ++ factoriesV1).map(_.getClass.getName).mkString(", "))
+  logger.debug(s"Found ${factories.size} factories: ${factories.map(_.getClass.getName).mkString(", ")}")
 
   /**
     * Create a converter
@@ -70,16 +72,8 @@ object SimpleFeatureConverter extends StrictLogging {
     * @return
     */
   def apply(sft: SimpleFeatureType, config: Config): SimpleFeatureConverter = {
-    val converters = factories.iterator.flatMap(_.apply(sft, config))
-    if (converters.hasNext) { converters.next } else {
-      val convertersV1 = factoriesV1.iterator.filter(_.canProcess(config)).map(_.buildConverter(sft, config))
-      if (convertersV1.hasNext) {
-        val v1 = convertersV1.next
-        logger.warn(s"Wrapping deprecated converter of class ${v1.getClass.getName}, converter will not be closed")
-        new SimpleFeatureConverterWrapper(v1)
-      } else {
-        throw new IllegalArgumentException(s"Cannot find factory for ${sft.getTypeName}")
-      }
+    factories.toStream.flatMap(_.apply(sft, config)).headOption.getOrElse {
+      throw new IllegalArgumentException(s"Cannot find factory for ${sft.getTypeName}")
     }
   }
 
@@ -118,25 +112,12 @@ object SimpleFeatureConverter extends StrictLogging {
     * @param sft simple feature type, if known
     * @return
     */
-  def infer(is: () => InputStream, sft: Option[SimpleFeatureType]): Option[(SimpleFeatureType, Config)] = {
+  def infer(
+      is: () => InputStream,
+      sft: Option[SimpleFeatureType],
+      path: Option[String] = None): Option[(SimpleFeatureType, Config)] = {
     factories.foldLeft[Option[(SimpleFeatureType, Config)]](None) { (res, f) =>
-      res.orElse(WithClose(is())(in => f.infer(in, sft)))
+      res.orElse(WithClose(is())(in => f.infer(in, sft, path)))
     }
-  }
-
-  class SimpleFeatureConverterWrapper(converter: convert.SimpleFeatureConverter[_]) extends SimpleFeatureConverter {
-
-    override def targetSft: SimpleFeatureType = converter.targetSFT
-
-    override def process(is: InputStream, ec: EvaluationContext): CloseableIterator[SimpleFeature] =
-      converter.process(is, ec)
-
-    override def createEvaluationContext(globalParams: Map[String, Any],
-                                         caches: Map[String, EnrichmentCache],
-                                         counter: Counter): EvaluationContext = {
-      converter.createEvaluationContext(globalParams, counter)
-    }
-
-    override def close(): Unit = converter.close()
   }
 }

@@ -1,6 +1,10 @@
 Installing GeoMesa Kudu
 =======================
 
+.. note::
+
+    GeoMesa currently supports Kudu version |kudu_version|.
+
 Installing the Binary Distribution
 ----------------------------------
 
@@ -107,17 +111,12 @@ For more details, see :ref:`kudu_tools`.
 Installing GeoMesa Kudu in GeoServer
 ------------------------------------
 
+.. warning::
+
+    See :ref:`geoserver_versions` to ensure that GeoServer is compatible with your GeoMesa version.
+
 The Kudu GeoServer plugin is bundled by default in a GeoMesa binary distribution. To install, extract
 ``$GEOMESA_KUDU_HOME/dist/gs-plugins/geomesa-kudu-gs-plugin_2.11-$VERSION-install.tar.gz`` into GeoServer's
 ``WEB-INF/lib`` directory.
 
 Restart GeoServer after the JARs are installed.
-
-Jackson Version
-^^^^^^^^^^^^^^^
-
-.. warning::
-
-    Some GeoMesa functions (in particular Arrow conversion) requires ``jackson-core-2.6.x``. Some versions
-    of GeoServer ship with an older version, ``jackson-core-2.5.0.jar``. After installing the GeoMesa
-    GeoServer plugin, be sure to delete the older JAR from GeoServer's ``WEB-INF/lib`` folder.

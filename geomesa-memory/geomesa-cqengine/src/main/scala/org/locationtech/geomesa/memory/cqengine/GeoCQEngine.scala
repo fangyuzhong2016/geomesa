@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -21,12 +21,13 @@ import com.googlecode.cqengine.query.simple.{All, Equal}
 import com.googlecode.cqengine.query.{Query, QueryFactory}
 import com.googlecode.cqengine.{ConcurrentIndexedCollection, IndexedCollection}
 import com.typesafe.scalalogging.LazyLogging
-import com.vividsolutions.jts.geom.Geometry
 import org.locationtech.geomesa.memory.cqengine.attribute.SimpleFeatureAttribute
-import org.locationtech.geomesa.memory.cqengine.index.GeoIndex
+import org.locationtech.geomesa.memory.cqengine.index.GeoIndexType
+import org.locationtech.geomesa.memory.cqengine.index.param.{BucketIndexParam, GeoIndexParams}
 import org.locationtech.geomesa.memory.cqengine.utils.CQIndexType.CQIndexType
 import org.locationtech.geomesa.memory.cqengine.utils._
 import org.locationtech.geomesa.utils.index.SimpleFeatureIndex
+import org.locationtech.jts.geom.Geometry
 import org.opengis.feature.simple.{SimpleFeature, SimpleFeatureType}
 import org.opengis.filter._
 
@@ -35,10 +36,27 @@ import scala.collection.JavaConversions._
 class GeoCQEngine(val sft: SimpleFeatureType,
                   attributes: Seq[(String, CQIndexType)],
                   enableFidIndex: Boolean = false,
-                  geomResolution: (Int, Int) = (360, 180),
+                  geoIndexType: GeoIndexType = GeoIndexType.Bucket,
+                  geoIndexParam: Option[_ <: GeoIndexParams] = Option.empty,
                   dedupe: Boolean = true) extends SimpleFeatureIndex with LazyLogging {
 
   protected val cqcache: IndexedCollection[SimpleFeature] = new ConcurrentIndexedCollection[SimpleFeature]()
+
+  def this(sft: SimpleFeatureType,
+           attributes: Seq[(String, CQIndexType)],
+           enableFidIndex: Boolean,
+           geomResolution: (Int, Int),
+           dedupe: Boolean) = {
+    this(sft, attributes, enableFidIndex, GeoIndexType.Bucket, Option.apply(new BucketIndexParam(geomResolution._1, geomResolution._2).asInstanceOf[GeoIndexParams]), dedupe)
+  }
+
+
+  def this(sft: SimpleFeatureType,
+           attributes: Seq[(String, CQIndexType)],
+           enableFidIndex: Boolean,
+           geomResolution: (Int, Int)) = {
+    this(sft, attributes, enableFidIndex, geomResolution, true)
+  }
 
   addIndices()
 
@@ -70,9 +88,8 @@ class GeoCQEngine(val sft: SimpleFeatureType,
   override def query(filter: Filter): Iterator[SimpleFeature] = {
     val query = filter.accept(new CQEngineQueryVisitor(sft), null).asInstanceOf[Query[SimpleFeature]]
     val iter = if (dedupe) {
-      val dedupOpt = QueryFactory.deduplicate(DeduplicationStrategy.LOGICAL_ELIMINATION)
-      val queryOptions = QueryFactory.queryOptions(dedupOpt)
-      cqcache.retrieve(query, queryOptions).iterator()
+      val dedupeOpt = QueryFactory.deduplicate(DeduplicationStrategy.LOGICAL_ELIMINATION)
+      cqcache.retrieve(query, QueryFactory.queryOptions(dedupeOpt)).iterator()
     } else {
       cqcache.retrieve(query).iterator()
     }
@@ -81,12 +98,6 @@ class GeoCQEngine(val sft: SimpleFeatureType,
 
   def size(): Int = cqcache.size()
   def clear(): Unit = cqcache.clear()
-
-  @deprecated def add(sf: SimpleFeature): Boolean = cqcache.add(sf)
-  @deprecated def addAll(sfs: util.Collection[SimpleFeature]): Boolean = cqcache.addAll(sfs)
-  @deprecated def remove(sf: SimpleFeature): Boolean = cqcache.remove(sf)
-  @deprecated def getById(id: String): Option[SimpleFeature] = Option(get(id))
-  @deprecated def getReaderForFilter(filter: Filter): Iterator[SimpleFeature] = query(filter)
 
   private def addIndices(): Unit = {
 
@@ -115,8 +126,8 @@ class GeoCQEngine(val sft: SimpleFeatureType,
               RadixTreeIndex.onAttribute(new SimpleFeatureAttribute(classOf[String], sft, name))
 
           case GEOMETRY | DEFAULT if classOf[Geometry].isAssignableFrom(binding) =>
-              val attribute = new SimpleFeatureAttribute(classOf[Geometry], sft, name)
-              GeoIndex.onAttribute(sft, attribute, geomResolution._1, geomResolution._2)
+              val attribute = new SimpleFeatureAttribute(binding.asInstanceOf[Class[Geometry]], sft, name)
+              GeoIndexFactory.onAttribute(sft, attribute, geoIndexType, geoIndexParam);
 
           case DEFAULT if classOf[UUID].isAssignableFrom(binding) =>
               UniqueIndex.onAttribute(new SimpleFeatureAttribute(classOf[UUID], sft, name))

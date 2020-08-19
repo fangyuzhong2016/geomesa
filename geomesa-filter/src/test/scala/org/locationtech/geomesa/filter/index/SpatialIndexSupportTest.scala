@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -8,7 +8,7 @@
 
 package org.locationtech.geomesa.filter.index
 
-import com.vividsolutions.jts.geom.Geometry
+import org.locationtech.jts.geom.Geometry
 import org.geotools.filter.text.ecql.ECQL
 import org.junit.runner.RunWith
 import org.locationtech.geomesa.features.ScalaSimpleFeature
@@ -31,8 +31,8 @@ class SpatialIndexSupportTest extends Specification {
   }
 
   step {
-    sis.index.insert(f1.getDefaultGeometry.asInstanceOf[Geometry].getEnvelopeInternal, f1.getID, f1)
-    sis.index.insert(f2.getDefaultGeometry.asInstanceOf[Geometry].getEnvelopeInternal, f2.getID, f2)
+    sis.index.insert(f1.getDefaultGeometry.asInstanceOf[Geometry], f1.getID, f1)
+    sis.index.insert(f2.getDefaultGeometry.asInstanceOf[Geometry], f2.getID, f2)
   }
 
   "SpatialIndexSupport" should {

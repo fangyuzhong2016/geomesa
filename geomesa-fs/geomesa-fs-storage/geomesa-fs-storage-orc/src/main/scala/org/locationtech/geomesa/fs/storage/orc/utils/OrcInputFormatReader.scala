@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -10,13 +10,15 @@ package org.locationtech.geomesa.fs.storage.orc.utils
 
 import java.util.UUID
 
-import com.vividsolutions.jts.geom.{Coordinate, LineString, LinearRing, Polygon}
+import org.locationtech.jts.geom.{Coordinate, LineString, LinearRing, Polygon}
 import org.apache.hadoop.io._
 import org.apache.orc.mapred.{OrcList, OrcMap, OrcStruct, OrcTimestamp}
 import org.geotools.filter.identity.FeatureIdImpl
 import org.geotools.geometry.jts.JTSFactoryFinder
 import org.locationtech.geomesa.features.serialization.ObjectType
 import org.locationtech.geomesa.features.serialization.ObjectType.ObjectType
+import org.locationtech.geomesa.fs.storage.orc.OrcFileSystemStorage
+import org.locationtech.geomesa.utils.text.WKBUtils
 import org.opengis.feature.simple.{SimpleFeature, SimpleFeatureType}
 
 trait OrcInputFormatReader {
@@ -34,10 +36,11 @@ object OrcInputFormatReader {
     var i = 0
     var col = 0
     while (i < sft.getAttributeCount) {
-      val bindings = ObjectType.selectType(sft.getDescriptor(i))
+      val descriptor = sft.getDescriptor(i)
+      val bindings = ObjectType.selectType(descriptor)
       if (columns.forall(_.contains(i))) {
         val reader = bindings.head match {
-          case ObjectType.GEOMETRY => col += 1; createGeometryReader(bindings(1), col - 1, col, i)
+          case ObjectType.GEOMETRY => createGeometryReader(bindings(1), col, i)
           case ObjectType.DATE     => new DateInputFormatReader(col, i)
           case ObjectType.STRING   => new StringInputFormatReader(col, i)
           case ObjectType.INT      => new IntInputFormatReader(col, i)
@@ -46,21 +49,15 @@ object OrcInputFormatReader {
           case ObjectType.DOUBLE   => new DoubleInputFormatReader(col, i)
           case ObjectType.BOOLEAN  => new BooleanInputFormatReader(col, i)
           case ObjectType.BYTES    => new BytesInputFormatReader(col, i)
-          case ObjectType.JSON     => new StringInputFormatReader(col, i)
           case ObjectType.UUID     => new UuidInputFormatReader(col, i)
           case ObjectType.LIST     => new ListInputFormatReader(col, i, bindings(1))
           case ObjectType.MAP      => new MapInputFormatReader(col, i, bindings(1), bindings(2))
           case _ => throw new IllegalArgumentException(s"Unexpected object type ${bindings.head}")
         }
         builder += reader
-        col += 1
-      } else {
-        bindings.head match {
-          case ObjectType.GEOMETRY => col += 2
-          case _                   => col += 1
-        }
       }
       i += 1
+      col += OrcFileSystemStorage.fieldCount(descriptor)
     }
 
     if (fid) {
@@ -70,14 +67,15 @@ object OrcInputFormatReader {
     new SequenceInputFormatReader(builder.result)
   }
 
-  private def createGeometryReader(binding: ObjectType, x: Int, y: Int, i: Int): OrcInputFormatReader = {
+  private def createGeometryReader(binding: ObjectType, col: Int, i: Int): OrcInputFormatReader = {
     binding match {
-      case ObjectType.POINT           => new PointInputFormatReader(x, y, i)
-      case ObjectType.LINESTRING      => new LineStringInputFormatReader(x, y, i)
-      case ObjectType.MULTIPOINT      => new MultiPointInputFormatReader(x, y, i)
-      case ObjectType.POLYGON         => new PolygonInputFormatReader(x, y, i)
-      case ObjectType.MULTILINESTRING => new MultiLineStringInputFormatReader(x, y, i)
-      case ObjectType.MULTIPOLYGON    => new MultiPolygonInputFormatReader(x, y, i)
+      case ObjectType.POINT           => new PointInputFormatReader(col, col + 1, i)
+      case ObjectType.LINESTRING      => new LineStringInputFormatReader(col, col + 1, i)
+      case ObjectType.MULTIPOINT      => new MultiPointInputFormatReader(col, col + 1, i)
+      case ObjectType.POLYGON         => new PolygonInputFormatReader(col, col + 1, i)
+      case ObjectType.MULTILINESTRING => new MultiLineStringInputFormatReader(col, col + 1, i)
+      case ObjectType.MULTIPOLYGON    => new MultiPolygonInputFormatReader(col, col + 1, i)
+      case ObjectType.GEOMETRY        => new GeometryWkbInputFormatReader(col, i)
       case _ => throw new IllegalArgumentException(s"Unexpected geometry type $binding")
     }
   }
@@ -330,6 +328,10 @@ object OrcInputFormatReader {
     }
   }
 
+  class GeometryWkbInputFormatReader(val col: Int, val attribute: Int) extends InputFormatReaderAdapter {
+    override def convert(input: AnyRef): AnyRef = WKBUtils.read(input.asInstanceOf[BytesWritable].copyBytes())
+  }
+
   class ListInputFormatReader(col: Int, attribute: Int, binding: ObjectType) extends OrcInputFormatReader {
     private val converter = getConverter(binding)
 
@@ -434,7 +436,6 @@ object OrcInputFormatReader {
       case ObjectType.DOUBLE   => new ConvertInputFormatDouble {}
       case ObjectType.BOOLEAN  => new ConvertInputFormatBoolean {}
       case ObjectType.BYTES    => new ConvertInputFormatBytes {}
-      case ObjectType.JSON     => new ConvertInputFormatString {}
       case ObjectType.UUID     => new ConvertInputFormatUuid {}
       case _ => throw new IllegalArgumentException(s"Unexpected object type $binding")
     }

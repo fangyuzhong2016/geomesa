@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -15,15 +15,16 @@ import org.apache.accumulo.core.security.Authorizations
 import org.geotools.data.Query
 import org.geotools.filter.text.ecql.ECQL
 import org.junit.runner.RunWith
-import org.locationtech.geomesa.accumulo.TestWithDataStore
+import org.locationtech.geomesa.accumulo.TestWithFeatureType
+import org.locationtech.geomesa.accumulo.data.AccumuloQueryPlan
 import org.locationtech.geomesa.accumulo.iterators.BinAggregatingIterator
 import org.locationtech.geomesa.curve.Z2SFC
 import org.locationtech.geomesa.features.ScalaSimpleFeature
 import org.locationtech.geomesa.index.conf.QueryHints._
+import org.locationtech.geomesa.index.index.z2.Z2Index
 import org.locationtech.geomesa.index.utils.{ExplainNull, Explainer}
 import org.locationtech.geomesa.utils.bin.BinaryOutputEncoder
 import org.locationtech.geomesa.utils.bin.BinaryOutputEncoder.BIN_ATTRIBUTE_INDEX
-import org.locationtech.sfcurve.zorder.Z2
 import org.opengis.feature.simple.SimpleFeature
 import org.opengis.filter.Filter
 import org.specs2.mutable.Specification
@@ -32,7 +33,7 @@ import org.specs2.runner.JUnitRunner
 import scala.collection.JavaConversions._
 
 @RunWith(classOf[JUnitRunner])
-class Z2IdxStrategyTest extends Specification with TestWithDataStore {
+class Z2IdxStrategyTest extends Specification with TestWithFeatureType {
 
   val spec = "name:String,track:String,dtg:Date,*geom:Point:srid=4326"
 
@@ -52,7 +53,6 @@ class Z2IdxStrategyTest extends Specification with TestWithDataStore {
     }
   addFeatures(features)
 
-  val strategy = Z2Index
   val queryPlanner = ds.queryPlanner
   val output = ExplainNull
 
@@ -60,12 +60,12 @@ class Z2IdxStrategyTest extends Specification with TestWithDataStore {
     "print values" in {
       skipped("used for debugging")
       println()
-      Z2Index.getTableNames(sft, ds).foreach { table =>
+      ds.manager.indices(sft).filter(_.name == Z2Index.name).flatMap(_.getTableNames()).foreach { table =>
         println(table)
         ds.connector.createScanner(table, new Authorizations()).foreach { r =>
           val bytes = r.getKey.getRow.getBytes
           val keyZ = Longs.fromByteArray(bytes.drop(2))
-          val (x, y) = Z2SFC.invert(Z2(keyZ))
+          val (x, y) = Z2SFC.invert(keyZ)
           println(s"row: $x $y")
         }
       }
@@ -141,32 +141,18 @@ class Z2IdxStrategyTest extends Specification with TestWithDataStore {
       forall(features)((f: SimpleFeature) => f.getAttribute("derived").asInstanceOf[String] must beMatching("myname\\d"))
     }
 
-    "apply transforms using only the row key" >> {
-      val filter = "bbox(geom, 35, 55, 45, 75)" +
-          " AND dtg between '2010-05-07T06:00:00.000Z' and '2010-05-08T00:00:00.000Z'"
-      val query = new Query(sftName, ECQL.toFilter(filter), Array("geom", "dtg"))
-      val qps = getQueryPlans(query)
-      forall(qps)(p => p.columnFamilies must containTheSameElementsAs(Seq(AccumuloColumnGroups.BinColumnFamily)))
-
-      val features = execute(filter, Some(Array("geom", "dtg")))
-      features must haveSize(4)
-      features.map(_.getID.toInt) must containTheSameElementsAs(6 to 9)
-      forall(features)((f: SimpleFeature) => f.getAttributeCount mustEqual 2)
-      forall(features)((f: SimpleFeature) => f.getAttribute("geom") must not(beNull))
-      forall(features)((f: SimpleFeature) => f.getAttribute("dtg") must not(beNull))
-    }.pendingUntilFixed("not implemented")
-
     "optimize for bin format" >> {
       val filter = "bbox(geom, -180, -90, 180, 90)" +
           " AND dtg between '2010-05-07T00:00:00.000Z' and '2010-05-07T12:00:00.000Z'"
       val query = new Query(sftName, ECQL.toFilter(filter))
       query.getHints.put(BIN_TRACK, "name")
       query.getHints.put(BIN_BATCH_SIZE, 100)
+      query.getHints.put(QUERY_INDEX, Z2Index.name)
 
       val qps = getQueryPlans(query)
       forall(qps)(_.iterators.map(_.getIteratorClass) must contain(classOf[BinAggregatingIterator].getCanonicalName))
 
-      val returnedFeatures = queryPlanner.runQuery(sft, query, Some(strategy), ExplainNull)
+      val returnedFeatures = queryPlanner.runQuery(sft, query, ExplainNull)
       // the same simple feature gets reused - so make sure you access in serial order
       val aggregates = returnedFeatures.map(f =>
         f.getAttribute(BIN_ATTRIBUTE_INDEX).asInstanceOf[Array[Byte]]).toSeq
@@ -187,11 +173,12 @@ class Z2IdxStrategyTest extends Specification with TestWithDataStore {
       query.getHints.put(BIN_TRACK, "name")
       query.getHints.put(BIN_BATCH_SIZE, 100)
       query.getHints.put(BIN_SORT, true)
+      query.getHints.put(QUERY_INDEX, Z2Index.name)
 
       val qps = getQueryPlans(query)
       forall(qps)(_.iterators.map(_.getIteratorClass) must contain(classOf[BinAggregatingIterator].getCanonicalName))
 
-      val returnedFeatures = queryPlanner.runQuery(sft, query, Some(strategy), ExplainNull)
+      val returnedFeatures = queryPlanner.runQuery(sft, query, ExplainNull)
       // the same simple feature gets reused - so make sure you access in serial order
       val aggregates = returnedFeatures.map(f =>
         f.getAttribute(BIN_ATTRIBUTE_INDEX).asInstanceOf[Array[Byte]]).toSeq
@@ -216,11 +203,12 @@ class Z2IdxStrategyTest extends Specification with TestWithDataStore {
       query.getHints.put(BIN_TRACK, "name")
       query.getHints.put(BIN_LABEL, "name")
       query.getHints.put(BIN_BATCH_SIZE, 100)
+      query.getHints.put(QUERY_INDEX, Z2Index.name)
 
       val qps = getQueryPlans(query)
       forall(qps)(_.iterators.map(_.getIteratorClass) must contain(classOf[BinAggregatingIterator].getCanonicalName))
 
-      val returnedFeatures = queryPlanner.runQuery(sft, query, Some(strategy), ExplainNull)
+      val returnedFeatures = queryPlanner.runQuery(sft, query, ExplainNull)
       // the same simple feature gets reused - so make sure you access in serial order
       val aggregates = returnedFeatures.map(f =>
         f.getAttribute(BIN_ATTRIBUTE_INDEX).asInstanceOf[Array[Byte]]).toSeq
@@ -238,31 +226,35 @@ class Z2IdxStrategyTest extends Specification with TestWithDataStore {
     "support sampling" in {
       val query = new Query(sftName, Filter.INCLUDE)
       query.getHints.put(SAMPLING, new java.lang.Float(.5f))
-      val results = queryPlanner.runQuery(sft, query, Some(strategy), ExplainNull).toList
-      results must haveLength(15)
+      query.getHints.put(QUERY_INDEX, Z2Index.name)
+      val results = queryPlanner.runQuery(sft, query, ExplainNull).toList
+      results.length must beLessThan(30)
     }
 
     "support sampling with cql" in {
       val query = new Query(sftName, ECQL.toFilter("track = 'track1'"))
       query.getHints.put(SAMPLING, new java.lang.Float(.5f))
-      val results = queryPlanner.runQuery(sft, query, Some(strategy), ExplainNull).toList
-      results must haveLength(5)
+      query.getHints.put(QUERY_INDEX, Z2Index.name)
+      val results = queryPlanner.runQuery(sft, query, ExplainNull).toList
+      results.length must beLessThan(10)
       forall(results)(_.getAttribute("track") mustEqual "track1")
     }
 
     "support sampling with transformations" in {
       val query = new Query(sftName, Filter.INCLUDE, Array("name", "geom"))
       query.getHints.put(SAMPLING, new java.lang.Float(.5f))
-      val results = queryPlanner.runQuery(sft, query, Some(strategy), ExplainNull).toList
-      results must haveLength(15)
+      query.getHints.put(QUERY_INDEX, Z2Index.name)
+      val results = queryPlanner.runQuery(sft, query, ExplainNull).toList
+      results.length must beLessThan(30)
       forall(results)(_.getAttributeCount mustEqual 2)
     }
 
     "support sampling with cql and transformations" in {
       val query = new Query(sftName, ECQL.toFilter("track = 'track2'"), Array("name", "geom"))
       query.getHints.put(SAMPLING, new java.lang.Float(.2f))
-      val results = queryPlanner.runQuery(sft, query, Some(strategy), ExplainNull).toList
-      results must haveLength(2)
+      query.getHints.put(QUERY_INDEX, Z2Index.name)
+      val results = queryPlanner.runQuery(sft, query, ExplainNull).toList
+      results.length must beLessThan(10)
       forall(results)(_.getAttributeCount mustEqual 2)
     }
 
@@ -270,11 +262,12 @@ class Z2IdxStrategyTest extends Specification with TestWithDataStore {
       val query = new Query(sftName, Filter.INCLUDE)
       query.getHints.put(SAMPLING, new java.lang.Float(.5f))
       query.getHints.put(SAMPLE_BY, "track")
-      val results = queryPlanner.runQuery(sft, query, Some(strategy), ExplainNull).toList
-      results.length must beLessThan(17)
-      results.count(_.getAttribute("track") == "track1") must beLessThan(6)
-      results.count(_.getAttribute("track") == "track2") must beLessThan(6)
-      results.count(_.getAttribute("track") == "track3") must beLessThan(6)
+      query.getHints.put(QUERY_INDEX, Z2Index.name)
+      val results = queryPlanner.runQuery(sft, query, ExplainNull).toList
+      results.length must beLessThan(30)
+      results.count(_.getAttribute("track") == "track1") must beLessThan(10)
+      results.count(_.getAttribute("track") == "track2") must beLessThan(10)
+      results.count(_.getAttribute("track") == "track3") must beLessThan(10)
     }
 
     "support sampling with bin queries" in {
@@ -284,15 +277,14 @@ class Z2IdxStrategyTest extends Specification with TestWithDataStore {
       query.getHints.put(BIN_BATCH_SIZE, 1000)
       query.getHints.put(SAMPLING, new java.lang.Float(.2f))
       query.getHints.put(SAMPLE_BY, "track")
+      query.getHints.put(QUERY_INDEX, Z2Index.name)
 
       // have to evaluate attributes before pulling into collection, as the same sf is reused
-      val results = queryPlanner.runQuery(sft, query, Some(strategy), ExplainNull).map(_.getAttribute(BIN_ATTRIBUTE_INDEX)).toList
+      val results = queryPlanner.runQuery(sft, query, ExplainNull).map(_.getAttribute(BIN_ATTRIBUTE_INDEX)).toList
       forall(results)(_ must beAnInstanceOf[Array[Byte]])
       val bins = results.flatMap(_.asInstanceOf[Array[Byte]].grouped(16).map(BinaryOutputEncoder.decode))
-      bins must haveLength(6)
-      bins.map(_.trackId) must containTheSameElementsAs {
-        Seq("track1", "track1", "track2", "track2", "track3", "track3").map(_.hashCode)
-      }
+      bins.length must beLessThan(30)
+      bins.map(_.trackId) must containAllOf(Seq("track1", "track2", "track3").map(_.hashCode))
     }
   }
 
@@ -301,10 +293,10 @@ class Z2IdxStrategyTest extends Specification with TestWithDataStore {
       case None    => new Query(sftName, ECQL.toFilter(ecql))
       case Some(t) => new Query(sftName, ECQL.toFilter(ecql), t)
     }
-    queryPlanner.runQuery(sft, query, Some(strategy), explain).toSeq
+    query.getHints.put(QUERY_INDEX, Z2Index.name)
+    queryPlanner.runQuery(sft, query, explain).toSeq
   }
 
-  def getQueryPlans(query: Query): Seq[AccumuloQueryPlan] = {
-    queryPlanner.planQuery(sft, query, Some(strategy), output).asInstanceOf[Seq[AccumuloQueryPlan]]
-  }
+  def getQueryPlans(query: Query): Seq[AccumuloQueryPlan] =
+    queryPlanner.planQuery(sft, query, Some(Z2Index.name), output).asInstanceOf[Seq[AccumuloQueryPlan]]
 }

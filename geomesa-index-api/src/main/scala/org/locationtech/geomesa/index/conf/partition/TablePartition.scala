@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -11,8 +11,7 @@ package org.locationtech.geomesa.index.conf.partition
 import java.util.ServiceLoader
 
 import com.typesafe.scalalogging.StrictLogging
-import org.locationtech.geomesa.index.api.WrappedFeature
-import org.locationtech.geomesa.index.geotools.GeoMesaDataStore
+import org.locationtech.geomesa.index.metadata.HasGeoMesaMetadata
 import org.locationtech.geomesa.utils.geotools.SimpleFeatureTypes.Configs
 import org.opengis.feature.simple.{SimpleFeature, SimpleFeatureType}
 import org.opengis.filter.Filter
@@ -32,12 +31,12 @@ trait TablePartition {
 
   /**
     * Gets the partitions that intersect a given filter. If partitions can't be determined, (e.g. if the filter
-    * doesn't have a predicate on the partition), then an empty seq is returned
+    * doesn't have a predicate on the partition), then an empty option is returned
     *
     * @param filter filter
-    * @return partitions, or an empty seq representing all partitions
+    * @return partitions, or an empty option representing all partitions
     */
-  def partitions(filter: Filter): Seq[String]
+  def partitions(filter: Filter): Option[Seq[String]]
 
   /**
     * Convert from a partition back to a partition-able value
@@ -62,8 +61,8 @@ object TablePartition extends StrictLogging {
     * @param sft simple feature type
     * @return
     */
-  def apply[DS <: GeoMesaDataStore[DS, F, W], F <: WrappedFeature, W](ds: GeoMesaDataStore[DS, F, W], sft: SimpleFeatureType): Option[TablePartition] = {
-    val name = sft.getUserData.get(Configs.TABLE_PARTITIONING).asInstanceOf[String]
+  def apply(ds: HasGeoMesaMetadata[String], sft: SimpleFeatureType): Option[TablePartition] = {
+    val name = sft.getUserData.get(Configs.TablePartitioning).asInstanceOf[String]
     if (name == null) { None } else {
       factories.find(_.name.equalsIgnoreCase(name)).map(_.create(ds, sft)).orElse {
         throw new IllegalArgumentException(s"No table partitioning of type '$name' is defined")
@@ -77,5 +76,5 @@ object TablePartition extends StrictLogging {
     * @param sft simple feature type
     * @return
     */
-  def partitioned(sft: SimpleFeatureType): Boolean = sft.getUserData.containsKey(Configs.TABLE_PARTITIONING)
+  def partitioned(sft: SimpleFeatureType): Boolean = sft.getUserData.containsKey(Configs.TablePartitioning)
 }

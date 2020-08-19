@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -8,8 +8,8 @@
 
 package org.locationtech.geomesa.arrow.vector.impl;
 
-import com.vividsolutions.jts.geom.Coordinate;
-import com.vividsolutions.jts.geom.LineString;
+import org.locationtech.jts.geom.Coordinate;
+import org.locationtech.jts.geom.LineString;
 import org.apache.arrow.memory.BufferAllocator;
 import org.apache.arrow.vector.BitVectorHelper;
 import org.apache.arrow.vector.FieldVector;
@@ -53,9 +53,8 @@ public abstract class AbstractLineStringVector<T extends FieldVector>
 
   @Override
   public void set(int index, LineString geom) {
-    if (index == 0) {
-      // need to do this to avoid issues with re-setting the value at index 0
-      vector.setLastSet(0);
+    if (vector.getLastSet() >= index) {
+      vector.setLastSet(index - 1);
     }
     final int position = vector.startNewValue(index);
     if (geom == null) {

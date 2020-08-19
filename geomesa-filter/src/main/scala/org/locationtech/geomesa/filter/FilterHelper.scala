@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -12,15 +12,14 @@ import java.time.{ZoneOffset, ZonedDateTime}
 import java.util.{Date, Locale}
 
 import com.typesafe.scalalogging.LazyLogging
-import com.vividsolutions.jts.geom._
 import org.geotools.data.DataUtilities
-import org.geotools.filter.spatial.BBOXImpl
 import org.locationtech.geomesa.filter.Bounds.Bound
 import org.locationtech.geomesa.filter.expression.AttributeExpression.{FunctionLiteral, PropertyLiteral}
 import org.locationtech.geomesa.filter.visitor.IdDetectingFilterVisitor
-import org.locationtech.geomesa.utils.geohash.GeohashUtils._
+import org.locationtech.geomesa.utils.date.DateUtils.toInstant
 import org.locationtech.geomesa.utils.geotools.GeometryUtils
-import org.locationtech.geomesa.utils.geotools.RichSimpleFeatureType.RichSimpleFeatureType
+import org.locationtech.geomesa.utils.geotools.converters.FastConverter
+import org.locationtech.jts.geom._
 import org.opengis.feature.simple.SimpleFeatureType
 import org.opengis.filter._
 import org.opengis.filter.expression.{Expression, PropertyName}
@@ -30,82 +29,17 @@ import org.opengis.temporal.Period
 
 import scala.collection.JavaConversions._
 import scala.collection.mutable.ListBuffer
-import scala.util.{Failure, Success}
 
 object FilterHelper {
 
-  import org.locationtech.geomesa.utils.geotools.GeometryUtils.distanceDegrees
   import org.locationtech.geomesa.utils.geotools.WholeWorldPolygon
-
-  private val SafeGeomString = "gm-safe"
 
   // helper shim to let other classes avoid importing FilterHelper.logger
   object FilterHelperLogger extends LazyLogging {
     private [FilterHelper] def log = logger
   }
 
-  /**
-    * Creates a new filter with valid bounds and attribute
-    *
-    * @param op spatial op
-    * @param sft simple feature type
-    * @return valid op
-    */
-  def visitBinarySpatialOp(op: BinarySpatialOperator, sft: SimpleFeatureType, factory: FilterFactory2): Filter = {
-    val prop = org.locationtech.geomesa.filter.checkOrderUnsafe(op.getExpression1, op.getExpression2)
-    val geom = prop.literal.evaluate(null, classOf[Geometry])
-    if (geom.getUserData == SafeGeomString) {
-      op // we've already visited this geom once
-    } else {
-      // check for null or empty attribute and replace with default geometry name
-      val attribute = Option(prop.name).filterNot(_.isEmpty).orElse(Option(sft).map(_.getGeomField)).orNull
-      // copy the geometry so we don't modify the original
-      val geomCopy = geom.getFactory.createGeometry(geom)
-      // trim to world boundaries
-      val trimmedGeom = geomCopy.intersection(WholeWorldPolygon)
-      if (trimmedGeom.isEmpty) {
-        Filter.EXCLUDE
-      } else {
-        // add waypoints if needed so that IDL is handled correctly
-        val geomWithWayPoints = if (op.isInstanceOf[BBOX]) { addWayPointsToBBOX(trimmedGeom) } else { trimmedGeom }
-        val safeGeometries = flattenGeometry(tryGetIdlSafeGeom(geomWithWayPoints))
-        // mark it as being visited
-        safeGeometries.foreach(_.setUserData(SafeGeomString))
-        val args: Array[Any] = op match {
-          case dwithin: DWithin => Array(dwithin.getDistance, dwithin.getDistanceUnits)
-          case _ => null
-        }
-        orFilters(safeGeometries.map(recreateFilter(op, attribute, _, prop.flipped, factory, args)))(factory)
-      }
-    }
-  }
-
-  private def tryGetIdlSafeGeom(geom: Geometry): Geometry = getInternationalDateLineSafeGeometry(geom) match {
-    case Success(g) => g
-    case Failure(e) => FilterHelperLogger.log.warn(s"Error splitting geometry on IDL for $geom", e); geom
-  }
-
-  private def recreateFilter(op: BinarySpatialOperator,
-                             property: String,
-                             geom: Geometry,
-                             flipped: Boolean,
-                             factory: FilterFactory2,
-                             args: Array[Any]): Filter = {
-    val (e1, e2) = if (flipped) {
-      (factory.literal(geom), factory.property(property))
-    } else {
-      (factory.property(property), factory.literal(geom))
-    }
-    op match {
-      case _: Within     => factory.within(e1, e2)
-      case _: Intersects => factory.intersects(e1, e2)
-      case _: Overlaps   => factory.overlaps(e1, e2)
-      case _: DWithin    => factory.dwithin(e1, e2, args(0).asInstanceOf[Double], args(1).asInstanceOf[String])
-      // use the direct constructor so that we preserve our geom user data
-      case _: BBOX       => new BBOXImpl(e1, e2)
-      case _: Contains   => factory.contains(e1, e2)
-    }
-  }
+  val ff: FilterFactory2 = org.locationtech.geomesa.filter.ff
 
   def isFilterWholeWorld(f: Filter): Boolean = f match {
       case op: BBOX       => isOperationGeomWholeWorld(op)
@@ -126,12 +60,29 @@ object FilterHelper {
         case SpatialOpOrder.PropertyFirst => !p.flipped
         case SpatialOpOrder.LiteralFirst  => p.flipped
       }
-      ordered && Option(p.literal.evaluate(null, classOf[Geometry])).exists(isWholeWorld)
+      ordered && Option(FastConverter.evaluate(p.literal, classOf[Geometry])).exists(isWholeWorld)
     }
   }
 
   def isWholeWorld[G <: Geometry](g: G): Boolean = g != null && g.union.covers(WholeWorldPolygon)
 
+  /**
+    * Returns the intersection of this geometry with the world polygon
+    *
+    * Note: may return the geometry itself if it is already covered by the world
+    *
+    * @param g geometry
+    * @return
+    */
+  def trimToWorld(g: Geometry): Geometry =
+    if (WholeWorldPolygon.covers(g)) { g } else { g.intersection(WholeWorldPolygon) }
+
+  /**
+    * Add way points to a geometry, preventing it from being split by JTS AM handling
+    *
+    * @param g geom
+    * @return
+    */
   def addWayPointsToBBOX(g: Geometry): Geometry = {
     val geomArray = g.getCoordinates
     val correctedGeom = GeometryUtils.addWayPoints(geomArray).toArray
@@ -148,7 +99,7 @@ object FilterHelper {
     * @return geometry bounds from spatial filters
     */
   def extractGeometries(filter: Filter, attribute: String, intersect: Boolean = true): FilterValues[Geometry] =
-    extractUnclippedGeometries(filter, attribute, intersect).map(_.intersection(WholeWorldPolygon))
+    extractUnclippedGeometries(filter, attribute, intersect).map(trimToWorld)
 
   /**
     * Extract geometries from a filter without validating boundaries.
@@ -176,40 +127,11 @@ object FilterHelper {
 
       // Note: although not technically required, all known spatial predicates are also binary spatial operators
       case f: BinarySpatialOperator if isSpatialFilter(f) =>
-        val geometry = for {
-          prop <- checkOrder(f.getExpression1, f.getExpression2)
-          if prop.name == null || prop.name == attribute
-          geom <- Option(prop.literal.evaluate(null, classOf[Geometry]))
-        } yield {
-          val buffered = filter match {
-            case f: DWithin => geom.buffer(distanceDegrees(geom, f.getDistance * metersMultiplier(f.getDistanceUnits))._2)
-            case _: BBOX    => addWayPointsToBBOX(geom.getFactory.createGeometry(geom).intersection(WholeWorldPolygon))
-            case _          => geom
-          }
-          tryGetIdlSafeGeom(buffered)
-        }
-        FilterValues(geometry.map(flattenGeometry).getOrElse(Seq.empty))
+        FilterValues(GeometryProcessing.extract(f, attribute))
 
-      case _ => FilterValues.empty
+      case _ =>
+        FilterValues.empty
     }
-  }
-
-  def metersMultiplier(units: String): Double = {
-    if (units == null) { 1d } else {
-      units.trim.toLowerCase(Locale.US) match {
-        case "meters"         => 1d
-        case "kilometers"     => 1000d
-        case "feet"           => 0.3048
-        case "statute miles"  => 1609.347
-        case "nautical miles" => 1852d
-        case _                => 1d // not part of ECQL spec...
-      }
-    }
-  }
-
-  private def flattenGeometry(geometry: Geometry): Seq[Geometry] = geometry match {
-    case g: GeometryCollection => Seq.tabulate(g.getNumGeometries)(g.getGeometryN).flatMap(flattenGeometry)
-    case _ => Seq(geometry)
   }
 
   /**
@@ -245,10 +167,10 @@ object FilterHelper {
   }
 
   private def createDateTime(bound: Bound[Date],
-                             round: (ZonedDateTime) => ZonedDateTime,
+                             round: ZonedDateTime => ZonedDateTime,
                              roundExclusive: Boolean): Bound[ZonedDateTime] = {
     if (bound.value.isEmpty) { Bound.unbounded } else {
-      val dt = bound.value.map(d => ZonedDateTime.ofInstant(d.toInstant, ZoneOffset.UTC))
+      val dt = bound.value.map(d => ZonedDateTime.ofInstant(toInstant(d), ZoneOffset.UTC))
       if (roundExclusive && !bound.inclusive) {
         Bound(dt.map(round), inclusive = true)
       } else {
@@ -294,7 +216,7 @@ object FilterHelper {
       case f: PropertyIsEqualTo =>
         checkOrder(f.getExpression1, f.getExpression2).filter(_.name == attribute).flatMap {
           case e: PropertyLiteral =>
-            Option(e.literal.evaluate(null, binding)).map { lit =>
+            Option(FastConverter.evaluate(e.literal, binding)).map { lit =>
               val bound = Bound(Some(lit), inclusive = true)
               FilterValues(Seq(Bounds(bound, bound)))
             }
@@ -307,8 +229,8 @@ object FilterHelper {
           val prop = f.getExpression.asInstanceOf[PropertyName].getPropertyName
           if (prop != attribute) { FilterValues.empty } else {
             // note that between is inclusive
-            val lower = Bound(Option(f.getLowerBoundary.evaluate(null, binding)), inclusive = true)
-            val upper = Bound(Option(f.getUpperBoundary.evaluate(null, binding)), inclusive = true)
+            val lower = Bound(Option(FastConverter.evaluate(f.getLowerBoundary, binding)), inclusive = true)
+            val upper = Bound(Option(FastConverter.evaluate(f.getUpperBoundary, binding)), inclusive = true)
             FilterValues(Seq(Bounds(lower, upper)))
           }
         } catch {
@@ -320,7 +242,7 @@ object FilterHelper {
       case f: During if classOf[Date].isAssignableFrom(binding) =>
         checkOrder(f.getExpression1, f.getExpression2).filter(_.name == attribute).flatMap {
           case e: PropertyLiteral =>
-            Option(e.literal.evaluate(null, classOf[Period])).map { p =>
+            Option(FastConverter.evaluate(e.literal, classOf[Period])).map { p =>
               // note that during is exclusive
               val lower = Bound(Option(p.getBeginning.getPosition.getDate.asInstanceOf[T]), inclusive = false)
               val upper = Bound(Option(p.getEnding.getPosition.getDate.asInstanceOf[T]), inclusive = false)
@@ -333,7 +255,7 @@ object FilterHelper {
       case f: PropertyIsGreaterThan =>
         checkOrder(f.getExpression1, f.getExpression2).filter(_.name == attribute).flatMap {
           case e: PropertyLiteral =>
-            Option(e.literal.evaluate(null, binding)).map { lit =>
+            Option(FastConverter.evaluate(e.literal, binding)).map { lit =>
               val bound = Bound(Some(lit), inclusive = false)
               val (lower, upper) = if (e.flipped) { (Bound.unbounded[T], bound) } else { (bound, Bound.unbounded[T]) }
               FilterValues(Seq(Bounds(lower, upper)))
@@ -345,7 +267,7 @@ object FilterHelper {
       case f: PropertyIsGreaterThanOrEqualTo =>
         checkOrder(f.getExpression1, f.getExpression2).filter(_.name == attribute).flatMap {
           case e: PropertyLiteral =>
-            Option(e.literal.evaluate(null, binding)).map { lit =>
+            Option(FastConverter.evaluate(e.literal, binding)).map { lit =>
               val bound = Bound(Some(lit), inclusive = true)
               val (lower, upper) = if (e.flipped) { (Bound.unbounded[T], bound) } else { (bound, Bound.unbounded[T]) }
               FilterValues(Seq(Bounds(lower, upper)))
@@ -357,7 +279,7 @@ object FilterHelper {
       case f: PropertyIsLessThan =>
         checkOrder(f.getExpression1, f.getExpression2).filter(_.name == attribute).flatMap {
           case e: PropertyLiteral =>
-            Option(e.literal.evaluate(null, binding)).map { lit =>
+            Option(FastConverter.evaluate(e.literal, binding)).map { lit =>
               val bound = Bound(Some(lit), inclusive = false)
               val (lower, upper) = if (e.flipped) { (bound, Bound.unbounded[T]) } else { (Bound.unbounded[T], bound) }
               FilterValues(Seq(Bounds(lower, upper)))
@@ -369,7 +291,7 @@ object FilterHelper {
       case f: PropertyIsLessThanOrEqualTo =>
         checkOrder(f.getExpression1, f.getExpression2).filter(_.name == attribute).flatMap {
           case e: PropertyLiteral =>
-            Option(e.literal.evaluate(null, binding)).map { lit =>
+            Option(FastConverter.evaluate(e.literal, binding)).map { lit =>
               val bound = Bound(Some(lit), inclusive = true)
               val (lower, upper) = if (e.flipped) { (bound, Bound.unbounded[T]) } else { (Bound.unbounded[T], bound) }
               FilterValues(Seq(Bounds(lower, upper)))
@@ -381,7 +303,7 @@ object FilterHelper {
       case f: Before =>
         checkOrder(f.getExpression1, f.getExpression2).filter(_.name == attribute).flatMap {
           case e: PropertyLiteral =>
-            Option(e.literal.evaluate(null, binding)).map { lit =>
+            Option(FastConverter.evaluate(e.literal, binding)).map { lit =>
               // note that before is exclusive
               val bound = Bound(Some(lit), inclusive = false)
               val (lower, upper) = if (e.flipped) { (bound, Bound.unbounded[T]) } else { (Bound.unbounded[T], bound) }
@@ -394,7 +316,7 @@ object FilterHelper {
       case f: After =>
         checkOrder(f.getExpression1, f.getExpression2).filter(_.name == attribute).flatMap {
           case e: PropertyLiteral =>
-            Option(e.literal.evaluate(null, binding)).map { lit =>
+            Option(FastConverter.evaluate(e.literal, binding)).map { lit =>
               // note that after is exclusive
               val bound = Bound(Some(lit), inclusive = false)
               val (lower, upper) = if (e.flipped) { (Bound.unbounded[T], bound) } else { (bound, Bound.unbounded[T]) }
@@ -408,15 +330,30 @@ object FilterHelper {
         try {
           val prop = f.getExpression.asInstanceOf[PropertyName].getPropertyName
           if (prop != attribute) { FilterValues.empty } else {
-            // Remove the trailing wildcard and create a range prefix
+            // find the first wildcard and create a range prefix
             val literal = f.getLiteral
-            val lower = if (literal.endsWith(MULTICHAR_WILDCARD)) {
-              literal.substring(0, literal.length - MULTICHAR_WILDCARD.length)
-            } else {
-              literal
+            var i = literal.indexWhere(Wildcards.contains)
+            // check for escaped wildcards
+            while (i > 1 && literal.charAt(i - 1) == '\\' && literal.charAt(i - 2) == '\\') {
+              i = literal.indexWhere(Wildcards.contains, i + 1)
             }
-            val upper = Bound(Some(lower + WILDCARD_SUFFIX), inclusive = true).asInstanceOf[Bound[T]]
-            FilterValues(Seq(Bounds(Bound(Some(lower.asInstanceOf[T]), inclusive = true), upper)))
+            if (i == -1) {
+              val literals = if (f.isMatchingCase) { Seq(literal) } else { casePermutations(literal) }
+              val bounds = literals.map { lit =>
+                val bound = Bound(Some(lit), inclusive = true)
+                Bounds(bound, bound)
+              }
+              FilterValues(bounds.asInstanceOf[Seq[Bounds[T]]], precise = true)
+            } else {
+              val prefix = literal.substring(0, i)
+              val prefixes = if (f.isMatchingCase) { Seq(prefix) } else { casePermutations(prefix) }
+              val bounds = prefixes.map { p =>
+                Bounds(Bound(Some(p), inclusive = true), Bound(Some(p + WildcardSuffix), inclusive = true))
+              }
+              // our ranges fully capture the filter if there's a single trailing multi-char wildcard
+              val exact = i == literal.length - 1 && literal.charAt(i) == WildcardMultiChar
+              FilterValues(bounds.asInstanceOf[Seq[Bounds[T]]], precise = exact)
+            }
           }
         } catch {
           case e: Exception =>
@@ -469,7 +406,7 @@ object FilterHelper {
 
       case f: TEquals =>
         checkOrder(f.getExpression1, f.getExpression2).filter(_.name == attribute).flatMap { prop =>
-          Option(prop.literal.evaluate(null, binding)).map { lit =>
+          Option(FastConverter.evaluate(prop.literal, binding)).map { lit =>
             val bound = Bound(Some(lit), inclusive = true)
             FilterValues(Seq(Bounds(bound, bound)))
           }
@@ -486,6 +423,71 @@ object FilterHelper {
     Some(FilterValues(Seq(Bounds.everything[T]), precise = false))
   }
 
+  /**
+   * Calculates all the different case permutations of a string.
+   *
+   * For example, "foo" -> Seq("foo", "Foo", "fOo", "foO", "fOO", "FoO", "FOo", "FOO")
+   *
+   * @param string input string
+   * @return
+   */
+  private def casePermutations(string: String): Seq[String] = {
+    val max = FilterProperties.CaseInsensitiveLimit.toInt.getOrElse {
+      // has a valid default value so should never return a none
+      throw new IllegalStateException(
+        s"Error getting default value for ${FilterProperties.CaseInsensitiveLimit.property}")
+    }
+
+    val lower = string.toLowerCase(Locale.US)
+    val upper = string.toUpperCase(Locale.US)
+    // account for chars without upper/lower cases, which we don't need to permute
+    val count = (0 until lower.length).count(i => lower(i) != upper(i))
+
+    if (count > max) {
+      FilterHelperLogger.log.warn(s"Not expanding case-insensitive prefix due to length: $string")
+      Seq.empty
+    } else {
+      // there will be 2^n different permutations, accounting for chars that don't have an upper/lower case
+      val permutations = Array.fill(math.pow(2, count).toInt)(Array(lower: _*))
+      var i = 0 // track the index of the current char
+      var c = 0 // track the index of the bit check, which skips chars that don't have an upper/lower case
+      while (i < string.length) {
+        val upperChar = upper.charAt(i)
+        if (lower.charAt(i) != upperChar) {
+          var j = 0
+          while (j < permutations.length) {
+            // set upper/lower based on the bit
+            if (((j >> c) & 1) != 0) {
+              permutations(j)(i) = upperChar
+            }
+            j += 1
+          }
+          c += 1
+        }
+        i += 1
+      }
+
+      permutations.map(new String(_))
+    }
+  }
+
+  /**
+    * Extract property names from a filter. If a schema is available,
+    * prefer `propertyNames(Filter, SimpleFeatureType)` as that will handle
+    * things like default geometry bboxes
+    *
+    * @param filter filter
+    * @return unique property names referenced in the filter, in sorted order
+    */
+  def propertyNames(filter: Filter): Seq[String] = propertyNames(filter, null)
+
+  /**
+    * Extract property names from a filter
+    *
+    * @param filter filter
+    * @param sft simple feature type
+    * @return unique property names referenced in the filter, in sorted order
+    */
   def propertyNames(filter: Filter, sft: SimpleFeatureType): Seq[String] =
     DataUtilities.attributeNames(filter, sft).toSeq.distinct.sorted
 
@@ -496,6 +498,8 @@ object FilterHelper {
     filter.accept(new IdDetectingFilterVisitor, false).asInstanceOf[Boolean]
 
   def filterListAsAnd(filters: Seq[Filter]): Option[Filter] = andOption(filters)
+
+  def filterListAsOr(filters: Seq[Filter]): Option[Filter] = orOption(filters)
 
   /**
     * Simplifies filters to make them easier to process.

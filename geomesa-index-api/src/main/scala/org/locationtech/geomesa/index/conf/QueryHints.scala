@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -8,12 +8,14 @@
 
 package org.locationtech.geomesa.index.conf
 
-import com.vividsolutions.jts.geom.Envelope
-import org.geotools.factory.Hints
-import org.geotools.factory.Hints.{ClassKey, IntegerKey}
+import org.locationtech.jts.geom.Envelope
+import org.geotools.util.factory.Hints
+import org.geotools.util.factory.Hints.{ClassKey, IntegerKey}
 import org.geotools.geometry.jts.ReferencedEnvelope
+import org.geotools.referencing.CRS
 import org.locationtech.geomesa.index.planning.QueryPlanner.CostEvaluation
 import org.locationtech.geomesa.index.planning.QueryPlanner.CostEvaluation.CostEvaluation
+import org.locationtech.geomesa.index.utils.Reprojection.QueryReferenceSystems
 import org.locationtech.geomesa.utils.text.StringSerialization
 import org.opengis.feature.simple.SimpleFeatureType
 import org.opengis.filter.sort.{SortBy, SortOrder}
@@ -24,7 +26,8 @@ object QueryHints {
   val COST_EVALUATION  = new ClassKey(classOf[CostEvaluation])
 
   val DENSITY_BBOX     = new ClassKey(classOf[ReferencedEnvelope])
-  val DENSITY_WEIGHT   = new ClassKey(classOf[java.lang.String])
+  val DENSITY_GEOM     = new ClassKey(classOf[String])
+  val DENSITY_WEIGHT   = new ClassKey(classOf[String])
   val DENSITY_WIDTH    = new IntegerKey(256)
   val DENSITY_HEIGHT   = new IntegerKey(256)
 
@@ -51,6 +54,7 @@ object QueryHints {
   val ARROW_BATCH_SIZE         = new ClassKey(classOf[java.lang.Integer])
   val ARROW_SORT_FIELD         = new ClassKey(classOf[java.lang.String])
   val ARROW_SORT_REVERSE       = new ClassKey(classOf[java.lang.Boolean])
+  val ARROW_FORMAT_VERSION     = new ClassKey(classOf[String])
 
   val ARROW_DICTIONARY_FIELDS  = new ClassKey(classOf[java.lang.String])
   val ARROW_DICTIONARY_VALUES  = new ClassKey(classOf[java.lang.String])
@@ -62,32 +66,36 @@ object QueryHints {
   val LAMBDA_QUERY_PERSISTENT  = new ClassKey(classOf[java.lang.Boolean])
   val LAMBDA_QUERY_TRANSIENT   = new ClassKey(classOf[java.lang.Boolean])
 
+  def sortReadableString(sort: Seq[(String, Boolean)]): String =
+    sort.map { case (f, r) => s"$f ${if (r) "DESC" else "ASC" }"}.mkString(", ")
+
   // internal hints that shouldn't be set directly by users
   object Internal {
     val RETURN_SFT       = new ClassKey(classOf[SimpleFeatureType])
     val TRANSFORMS       = new ClassKey(classOf[String])
     val TRANSFORM_SCHEMA = new ClassKey(classOf[SimpleFeatureType])
     val SORT_FIELDS      = new ClassKey(classOf[String])
+    val REPROJECTION     = new ClassKey(classOf[String])
+    val MAX_FEATURES     = new ClassKey(classOf[java.lang.Integer])
     val SKIP_REDUCE      = new ClassKey(classOf[java.lang.Boolean])
 
     def toSortHint(sortBy: Array[SortBy]): String = {
-      val hints = sortBy.map {
-        case SortBy.NATURAL_ORDER => ":false"
-        case SortBy.REVERSE_ORDER => ":true"
-        case sb =>
-          val name = Option(sb.getPropertyName).map(_.getPropertyName).getOrElse("")
-          s"$name:${sb.getSortOrder == SortOrder.DESCENDING}"
+      val strings = sortBy.flatMap { sb =>
+        val prop = sb.getPropertyName
+        Seq(if (prop == null) { "" } else { prop.getPropertyName }, s"${sb.getSortOrder == SortOrder.DESCENDING}")
       }
-      hints.mkString(",")
+      StringSerialization.encodeSeq(strings)
     }
 
-    def fromSortHint(hint: String): Seq[(String, Boolean)] = {
-      hint.split(",").toSeq.map { h =>
-        h.split(":") match {
-          case Array(field, reverse) => (field, reverse.toBoolean)
-          case _ => throw new IllegalArgumentException(s"Invalid sort field, expected 'name:reverse' but got '$h'")
-        }
-      }
+    def fromSortHint(hint: String): Seq[(String, Boolean)] =
+      StringSerialization.decodeSeq(hint).grouped(2).toSeq.map { case Seq(f, r) => (f, r.toBoolean) }
+
+    def toProjectionHint(crs: QueryReferenceSystems): String =
+      StringSerialization.encodeSeq(Seq(crs.native, crs.user, crs.target).map(CRS.toSRS))
+
+    def fromProjectionHint(hint: String): QueryReferenceSystems = {
+      val Seq(native, user, target) = StringSerialization.decodeSeq(hint).map(CRS.decode)
+      QueryReferenceSystems(native, user, target)
     }
   }
 
@@ -98,7 +106,7 @@ object QueryHints {
     def getCostEvaluation: CostEvaluation = {
       Option(hints.get(COST_EVALUATION).asInstanceOf[CostEvaluation])
           .orElse(QueryProperties.QueryCostType.option.flatMap(t => CostEvaluation.values.find(_.toString.equalsIgnoreCase(t))))
-          .getOrElse(CostEvaluation.Stats)
+          .getOrElse(CostEvaluation.Index)
     }
     def isSkipReduce: Boolean = Option(hints.get(Internal.SKIP_REDUCE).asInstanceOf[java.lang.Boolean]).exists(_.booleanValue())
     def isBinQuery: Boolean = hints.containsKey(BIN_TRACK)
@@ -114,6 +122,7 @@ object QueryHints {
     def getSampling: Option[(Float, Option[String])] = getSamplePercent.map((_, getSampleByField))
     def isDensityQuery: Boolean = hints.containsKey(DENSITY_BBOX)
     def getDensityEnvelope: Option[Envelope] = Option(hints.get(DENSITY_BBOX).asInstanceOf[Envelope])
+    def getDensityGeometry: Option[String] = Option(hints.get(DENSITY_GEOM).asInstanceOf[String])
     def getDensityBounds: Option[(Int, Int)] =
       for { w <- Option(hints.get(DENSITY_WIDTH).asInstanceOf[Int])
             h <- Option(hints.get(DENSITY_HEIGHT).asInstanceOf[Int]) } yield (w, h)
@@ -137,6 +146,7 @@ object QueryHints {
       Option(hints.get(ARROW_SORT_FIELD).asInstanceOf[String]).map { field =>
         (field, Option(hints.get(ARROW_SORT_REVERSE)).exists(_.asInstanceOf[Boolean]))
       }
+    def getArrowFormatVersion: Option[String] = Option(hints.get(ARROW_FORMAT_VERSION).asInstanceOf[String])
 
     def isStatsQuery: Boolean = hints.containsKey(STATS_STRING)
     def getStatsQuery: String = hints.get(STATS_STRING).asInstanceOf[String]
@@ -155,8 +165,9 @@ object QueryHints {
     }
     def getSortFields: Option[Seq[(String, Boolean)]] =
       Option(hints.get(Internal.SORT_FIELDS).asInstanceOf[String]).map(Internal.fromSortHint).filterNot(_.isEmpty)
-    def getSortReadableString: String =
-      getSortFields.map(_.map { case (f, r) => s"$f ${if (r) "DESC" else "ASC" }"}.mkString(", ")).getOrElse("none")
+    def getProjection: Option[QueryReferenceSystems] =
+      Option(hints.get(Internal.REPROJECTION).asInstanceOf[String]).map(Internal.fromProjectionHint)
+    def getMaxFeatures: Option[Int] = Option(hints.get(Internal.MAX_FEATURES).asInstanceOf[Integer]).map(_.intValue())
     def isExactCount: Option[Boolean] = Option(hints.get(EXACT_COUNT)).map(_.asInstanceOf[Boolean])
     def isLambdaQueryPersistent: Boolean =
       Option(hints.get(LAMBDA_QUERY_PERSISTENT).asInstanceOf[java.lang.Boolean]).forall(_.booleanValue)

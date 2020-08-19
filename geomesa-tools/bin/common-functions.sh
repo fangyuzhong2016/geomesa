@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Copyright (c) 2013-2016 Commonwealth Computer Research, Inc.
+# Copyright (c) 2013-%%copyright.year%% Commonwealth Computer Research, Inc.
 # All rights reserved. This program and the accompanying materials
 # are made available under the terms of the Apache License, Version 2.0 which
 # accompanies this distribution and is available at
@@ -14,11 +14,11 @@
 function setGeoLog() {
   if [[ -z "${GEOMESA_LOG_DIR}" ]]; then
     export GEOMESA_LOG_DIR="${%%gmtools.dist.name%%_HOME}/logs"
-    export GEOMESA_OPTS="-Dgeomesa.log.dir=${GEOMESA_LOG_DIR} ${GEOMESA_OPTS}"
   fi
   if [[ ! -d "${GEOMESA_LOG_DIR}" ]]; then
-    mkdir "${GEOMESA_LOG_DIR}"
+    mkdir -p "${GEOMESA_LOG_DIR}"
   fi
+  export GEOMESA_OPTS="-Dgeomesa.log.dir=${GEOMESA_LOG_DIR} ${GEOMESA_OPTS}"
 }
 
 # findJars [path] [bool: remove slf4j jars] [bool: do not descend into sub directories]
@@ -27,13 +27,13 @@ function findJars() {
   CP=()
   if [[ -d "${home}" ]]; then
     if [[ "$3" == "true" ]]; then
-      for jar in $(find ${home} -maxdepth 1 -iname "*.jar" -type f); do
+      for jar in $(find -L ${home} -maxdepth 1 -iname "*.jar" -type f); do
         if [[ "$jar" != *-sources.jar && ("$2" != "true" || "$jar" != *slf4j*) ]]; then
           CP+=(${jar})
         fi
       done
     else
-      for jar in $(find ${home} -type f -iname "*.jar"); do
+      for jar in $(find -L ${home} -type f -iname "*.jar"); do
         if [[ "$jar" != *-sources.jar && ("$2" != "true" || "$jar" != *slf4j*) ]]; then
           CP+=(${jar})
         fi
@@ -89,8 +89,8 @@ function downloadUrls() {
     for url in "${urls[@]}"; do
       fname="$(basename "$url")" # filename we'll save to
       tmpfile=$(mktemp)
-      # -sS disables progress meter but keeps error messages, -f don't save failed files, -o write to destination file
-      downloads+=("(echo fetching $fname && curl -sSfo '$tmpfile' '$url' && mv '$tmpfile' '${dest}/${fname}' && chmod 644 '${dest}/${fname}') || echo [ERROR] Failed to fetch $fname")
+      # -sS disables progress meter but keeps error messages, -f don't save failed files, -o write to destination file, -L follow redirects
+      downloads+=("(echo fetching $fname && curl -LsSfo '$tmpfile' '$url' && mv '$tmpfile' '${dest}/${fname}' && chmod 644 '${dest}/${fname}') || echo [ERROR] Failed to fetch $fname")
     done
     # pass to xargs to run with 4 threads
     # delimit with null char to avoid issues with spaces
@@ -103,6 +103,7 @@ function downloadUrls() {
     fi
   else
     echo "Download cancelled"
+    return 1
   fi
 }
 
@@ -126,7 +127,7 @@ function combineClasspaths() {
 function filterSLF4J() {
   base="$1"
   CP=()
-  for jar in $(find ${base} -maxdepth 1 -type f -name "*.jar"); do
+  for jar in $(find -L ${base} -maxdepth 1 -type f -name "*.jar"); do
     if [[ "$jar" != *"slf4j"* ]]; then
       CP+=(${jar})
     fi
@@ -440,9 +441,4 @@ setGeoLog
 if [[ -n "$JAVA_LIBRARY_PATH" ]]; then
   GEOMESA_OPTS="${GEOMESA_OPTS} -Djava.library.path=${JAVA_LIBRARY_PATH}"
   export LD_LIBRARY_PATH="$LD_LIBRARY_PATH:$JAVA_LIBRARY_PATH"
-fi
-
-# Configure Java Options this can be set in geomesa-env.
-if [[ -z "$CUSTOM_JAVA_OPTS" ]]; then
-  export CUSTOM_JAVA_OPTS="${JAVA_OPTS}"
 fi

@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -38,7 +38,6 @@ class LambdaDataStoreFactory extends DataStoreFactorySpi {
     val partitions = Kafka.PartitionsParam.lookup(params).intValue
     val consumers = Kafka.ConsumersParam.lookup(params).intValue
     val persist = PersistParam.lookup(params).booleanValue
-    val defaultVisibility = VisibilitiesParam.lookupOpt(params)
 
     val consumerConfig = parsePropertiesParam(Kafka.ConsumerOptsParam.lookup(params)) ++ Map("bootstrap.servers" -> brokers)
     val producer = {
@@ -57,7 +56,7 @@ class LambdaDataStoreFactory extends DataStoreFactorySpi {
 
     val clock = ClockParam.lookupOpt(params).getOrElse(Clock.systemUTC())
 
-    val config = LambdaConfig(zk, zkNamespace, partitions, consumers, expiry, defaultVisibility, persist)
+    val config = LambdaConfig(zk, zkNamespace, partitions, consumers, expiry, persist)
 
     new LambdaDataStore(persistence, producer, consumerConfig, offsetManager, config)(clock)
   }
@@ -106,13 +105,12 @@ object LambdaDataStoreFactory extends GeoMesaDataStoreInfo {
       Params.Kafka.ConsumersParam,
       Params.Kafka.ProducerOptsParam,
       Params.Kafka.ConsumerOptsParam,
-      Params.VisibilitiesParam,
       Params.LooseBBoxParam,
       Params.GenerateStatsParam,
       Params.AuditQueriesParam
     )
 
-  override def canProcess(params: java.util.Map[String, Serializable]): Boolean =
+  override def canProcess(params: java.util.Map[String, _ <: Serializable]): Boolean =
     AccumuloDataStoreFactory.canProcess(LambdaDataStoreFactory.filter(params)) &&
         Seq(Params.ExpiryParam, Params.Kafka.BrokersParam, Params.Kafka.ZookeepersParam).forall(_.exists(params))
 
@@ -127,7 +125,6 @@ object LambdaDataStoreFactory extends GeoMesaDataStoreInfo {
       val KeytabParam        = copy(AccumuloDataStoreParams.KeytabPathParam)
       val RecordThreadsParam = copy(AccumuloDataStoreParams.RecordThreadsParam)
       val WriteThreadsParam  = copy(AccumuloDataStoreParams.WriteThreadsParam)
-      val MockParam          = copy(AccumuloDataStoreParams.MockParam)
       val CatalogParam       = copy(AccumuloDataStoreParams.CatalogParam)
     }
 
@@ -154,7 +151,7 @@ object LambdaDataStoreFactory extends GeoMesaDataStoreInfo {
       deprecatedParams = p.deprecatedParams, systemProperty = p.systemProperty)
   }
 
-  private def filter(params: java.util.Map[String, Serializable]): java.util.Map[String, Serializable] = {
+  private def filter(params: java.util.Map[String, _ <: Serializable]): java.util.Map[String, Serializable] = {
     // note: includes a bit of redirection to allow us to pass non-serializable values in to tests
     import scala.collection.JavaConverters._
     Map[String, Any](params.asScala.toSeq: _ *)

@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -11,10 +11,10 @@ package org.locationtech.geomesa.utils.stats
 import java.util.Date
 
 import com.typesafe.scalalogging.LazyLogging
-import com.vividsolutions.jts.geom.Geometry
 import org.locationtech.geomesa.curve.TimePeriod.TimePeriod
 import org.locationtech.geomesa.curve.{BinnedTime, Z3SFC}
 import org.locationtech.geomesa.utils.clearspring.CountMinSketch
+import org.locationtech.jts.geom.Geometry
 import org.opengis.feature.simple.{SimpleFeature, SimpleFeatureType}
 
 import scala.collection.immutable.ListMap
@@ -30,20 +30,17 @@ import scala.collection.immutable.ListMap
   * @param eps (epsilon) with probability at least @see confidence, estimates will be within eps * N
   * @param confidence percent - with probability at least confidence, estimates will be within @see eps * N
   */
-class Z3Frequency(val sft: SimpleFeatureType,
-                  val geom: String,
-                  val dtg: String,
-                  val period: TimePeriod,
-                  val precision: Int,
-                  val eps: Double = 0.005,
-                  val confidence: Double = 0.95) extends Stat with LazyLogging {
+class Z3Frequency(
+    val sft: SimpleFeatureType,
+    val geom: String,
+    val dtg: String,
+    val period: TimePeriod,
+    val precision: Int,
+    val eps: Double = 0.005,
+    val confidence: Double = 0.95
+  ) extends Stat with LazyLogging {
 
   override type S = Z3Frequency
-
-  @deprecated("geom")
-  lazy val geomIndex: Int = g
-  @deprecated("dtg")
-  lazy val dtgIndex: Int = d
 
   private val g = sft.indexOf(geom)
   private val d = sft.indexOf(dtg)
@@ -59,7 +56,7 @@ class Z3Frequency(val sft: SimpleFeatureType,
     import org.locationtech.geomesa.utils.geotools.Conversions.RichGeometry
     val BinnedTime(b, o) = timeToBin(dtg.getTime)
     val centroid = geom.safeCentroid()
-    val z = sfc.index(centroid.getX, centroid.getY, o).z & mask
+    val z = sfc.index(centroid.getX, centroid.getY, o) & mask
     (b, z)
   }
 

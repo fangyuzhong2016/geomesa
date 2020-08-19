@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -11,7 +11,6 @@ package org.locationtech.geomesa.kudu.result
 import java.nio.ByteBuffer
 import java.nio.charset.StandardCharsets
 
-import com.vividsolutions.jts.geom.Envelope
 import org.apache.kudu.client.RowResult
 import org.geotools.filter.text.ecql.ECQL
 import org.locationtech.geomesa.features.ScalaSimpleFeature
@@ -23,8 +22,9 @@ import org.locationtech.geomesa.kudu.schema.KuduIndexColumnAdapter.{FeatureIdAda
 import org.locationtech.geomesa.kudu.schema.{KuduSimpleFeatureSchema, RowResultSimpleFeature}
 import org.locationtech.geomesa.security.VisibilityEvaluator
 import org.locationtech.geomesa.utils.collection.CloseableIterator
-import org.locationtech.geomesa.utils.geotools.{GeometryUtils, GridSnap, SimpleFeatureTypes}
+import org.locationtech.geomesa.utils.geotools.{GeometryUtils, RenderingGrid, SimpleFeatureTypes}
 import org.locationtech.geomesa.utils.io.ByteBuffers.ExpandingByteBuffer
+import org.locationtech.jts.geom.Envelope
 import org.opengis.feature.simple.{SimpleFeature, SimpleFeatureType}
 import org.opengis.filter.Filter
 
@@ -39,22 +39,24 @@ import org.opengis.filter.Filter
   * @param height height in pixels
   * @param weight weight expression, for non-uniform feature weighting
   */
-case class DensityAdapter(sft: SimpleFeatureType,
-                          auths: Seq[Array[Byte]],
-                          ecql: Option[Filter],
-                          envelope: Envelope,
-                          width: Int,
-                          height: Int,
-                          weight: Option[String]) extends KuduResultAdapter {
+case class DensityAdapter(
+    sft: SimpleFeatureType,
+    auths: Seq[Array[Byte]],
+    ecql: Option[Filter],
+    geom: String,
+    envelope: Envelope,
+    width: Int,
+    height: Int,
+    weight: Option[String]
+  ) extends KuduResultAdapter {
 
   private val requiresFid = ecql.exists(FilterHelper.hasIdFilter)
 
   // determine all the attributes that we need to be able to evaluate the transform and filter
   private val attributes = {
-    val fromGeom = Seq(sft.getGeometryDescriptor.getLocalName)
     val fromWeight = weight.map(w => FilterHelper.propertyNames(ECQL.toExpression(w), sft)).getOrElse(Seq.empty)
     val fromFilter = ecql.map(FilterHelper.propertyNames(_, sft)).getOrElse(Seq.empty)
-    (fromGeom ++ fromWeight ++ fromFilter).distinct
+    (Seq(geom) ++ fromWeight ++ fromFilter).distinct
   }
 
   private val schema = KuduSimpleFeatureSchema(sft)
@@ -65,17 +67,17 @@ case class DensityAdapter(sft: SimpleFeatureType,
     if (requiresFid) { Seq(FeatureIdAdapter.name, VisibilityAdapter.name) } else { Seq(VisibilityAdapter.name) } ++
         schema.schema(attributes).map(_.getName)
 
+  override def result: SimpleFeatureType = DensityScan.DensitySft
+
   override def adapt(results: CloseableIterator[RowResult]): CloseableIterator[SimpleFeature] = {
-    val grid = new GridSnap(envelope, width, height)
-    val result = scala.collection.mutable.Map.empty[(Int, Int), Double].withDefaultValue(0d)
-    val getWeight = DensityScan.getWeight(sft, weight)
-    val writeGeom = DensityScan.writeGeometry(sft, grid)
+    val renderer = DensityScan.getRenderer(sft, geom, weight)
+    val grid = new RenderingGrid(envelope, width, height)
     try {
       results.foreach { row =>
         val vis = VisibilityAdapter.readFromRow(row)
         if ((vis == null || VisibilityEvaluator.parse(vis).evaluate(auths)) &&
             { feature.setRowResult(row); ecql.forall(_.evaluate(feature)) }) {
-          writeGeom(feature, getWeight(feature), result)
+          renderer.render(grid, feature)
         }
       }
     } finally {
@@ -84,7 +86,7 @@ case class DensityAdapter(sft: SimpleFeatureType,
 
     val sf = new ScalaSimpleFeature(DensityScan.DensitySft, "", Array(GeometryUtils.zeroPoint))
     // Return value in user data so it's preserved when passed through a RetypingFeatureCollection
-    sf.getUserData.put(DensityScan.DensityValueKey, DensityScan.encodeResult(result))
+    sf.getUserData.put(DensityScan.DensityValueKey, DensityScan.encodeResult(grid))
     CloseableIterator(Iterator.single(sf))
   }
 
@@ -104,6 +106,7 @@ object DensityAdapter extends KuduResultAdapterSerialization[DensityAdapter] {
     bb.putInt(adapter.auths.length)
     adapter.auths.foreach(bb.putBytes)
     bb.putString(adapter.ecql.map(ECQL.toCQL).orNull)
+    bb.putString(adapter.geom)
     bb.putDouble(adapter.envelope.getMinX)
     bb.putDouble(adapter.envelope.getMaxX)
     bb.putDouble(adapter.envelope.getMinY)
@@ -119,11 +122,12 @@ object DensityAdapter extends KuduResultAdapterSerialization[DensityAdapter] {
     val sft = SimpleFeatureTypes.createType(bb.getString, bb.getString)
     val auths = Seq.fill(bb.getInt)(bb.getBytes)
     val ecql = Option(bb.getString).map(FastFilterFactory.toFilter(sft, _))
+    val geom = bb.getString
     val envelope = new Envelope(bb.getDouble, bb.getDouble, bb.getDouble, bb.getDouble)
     val width = bb.getInt
     val height = bb.getInt
     val weight = Option(bb.getString)
 
-    DensityAdapter(sft, auths, ecql, envelope, width, height, weight)
+    DensityAdapter(sft, auths, ecql, geom, envelope, width, height, weight)
   }
 }

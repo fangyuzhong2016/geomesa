@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -18,8 +18,6 @@ import com.typesafe.config.Config
 import org.locationtech.geomesa.convert.json.GeoJsonParsing.GeoJsonFeature
 import org.locationtech.geomesa.convert.json.JsonConverter.{JsonField, _}
 import org.locationtech.geomesa.convert.json.JsonConverterFactory.{JsonConfigConvert, JsonFieldConvert}
-import org.locationtech.geomesa.convert.Modes.{ErrorMode, ParseMode}
-import org.locationtech.geomesa.convert.SimpleFeatureValidator
 import org.locationtech.geomesa.convert2.AbstractConverter.BasicOptions
 import org.locationtech.geomesa.convert2.AbstractConverterFactory.{BasicOptionsConvert, ConverterConfigConvert, ConverterOptionsConvert, FieldConvert, OptionConvert}
 import org.locationtech.geomesa.convert2.TypeInference.{IdentityTransform, InferredType}
@@ -37,19 +35,22 @@ import scala.util.control.NonFatal
 
 class JsonConverterFactory extends AbstractConverterFactory[JsonConverter, JsonConfig, JsonField, BasicOptions] {
 
-  override protected val typeToProcess = "json"
+  override protected val typeToProcess: String = JsonConverterFactory.TypeToProcess
 
   override protected implicit def configConvert: ConverterConfigConvert[JsonConfig] = JsonConfigConvert
   override protected implicit def fieldConvert: FieldConvert[JsonField] = JsonFieldConvert
   override protected implicit def optsConvert: ConverterOptionsConvert[BasicOptions] = BasicOptionsConvert
 
-  override def infer(is: InputStream, sft: Option[SimpleFeatureType]): Option[(SimpleFeatureType, Config)] = {
+  override def infer(
+      is: InputStream,
+      sft: Option[SimpleFeatureType],
+      path: Option[String]): Option[(SimpleFeatureType, Config)] = {
     try {
       val reader = new JsonReader(new InputStreamReader(is, StandardCharsets.UTF_8))
       reader.setLenient(true)
 
       val elements = {
-        val iter = new Iterator[JsonElement] {
+        val iter: Iterator[JsonElement] = new Iterator[JsonElement] {
           private val parser = new JsonParser
           override def hasNext: Boolean = reader.peek() != JsonToken.END_DOCUMENT
           override def next(): JsonElement = parser.parse(reader)
@@ -68,7 +69,6 @@ class JsonConverterFactory extends AbstractConverterFactory[JsonConverter, JsonC
           case _: GeoJsonFeature => None
           case _: Seq[GeoJsonFeature] => Some("$.features[*]")
         }
-        val idField = Some(Expression("md5(string2bytes(json2string($0)))"))
 
         // flatten out any feature collections into features
         val features = geojson.flatMap {
@@ -76,13 +76,21 @@ class JsonConverterFactory extends AbstractConverterFactory[JsonConverter, JsonC
           case g: Seq[GeoJsonFeature] => g
         }
 
-        // track the 'properties' and geometry type in each feature
+        // track the 'properties', geometry type and 'id' in each feature
         val props = scala.collection.mutable.Map.empty[String, ListBuffer[String]]
         val geoms = scala.collection.mutable.Set.empty[ObjectType]
+        var hasId = true
 
         features.take(AbstractConverterFactory.inferSampleSize).foreach { feature =>
           geoms += TypeInference.infer(Seq(Seq(feature.geom))).head.typed
           feature.properties.foreach { case (k, v) => props.getOrElseUpdate(k, ListBuffer.empty) += v }
+          hasId = hasId && feature.id.isDefined
+        }
+
+        val idJsonField = if (hasId) { Some(new StringJsonField("id", "$.id", false, None)) } else { None }
+        val idField = idJsonField match {
+          case None    => Some(Expression("md5(string2bytes(json2string($0)))"))
+          case Some(f) => Some(Expression(s"$$${f.name}"))
         }
 
         // track the names we use for each column to ensure no duplicates
@@ -103,10 +111,12 @@ class JsonConverterFactory extends AbstractConverterFactory[JsonConverter, JsonC
         // track the inferred types of 'properties' entries
         val inferredTypes = ArrayBuffer[InferredType]()
 
-        // field definitions - call .toSeq first to ensure consistent ordering with types
-        val fields = props.toSeq.map { case (path, values) =>
+        // field definitions - call props.toSeq first to ensure consistent ordering with types
+        val fields = idJsonField.toSeq ++ props.toSeq.map { case (path, values) =>
           val attr = name(path)
-          val inferred = TypeInference.infer(values.map(Seq(_))).head
+          val inferred = TypeInference.infer(values.map(Seq(_))).headOption.getOrElse {
+            InferredType("", ObjectType.STRING, TypeInference.CastToString)
+          }
           inferredTypes += inferred.copy(name = attr) // note: side-effect in map
           // account for optional nodes by wrapping transform with a try/null
           val transform = Some(Expression(s"try(${inferred.transform.apply(0)},null)"))
@@ -125,12 +135,10 @@ class JsonConverterFactory extends AbstractConverterFactory[JsonConverter, JsonC
 
         val jsonConfig = JsonConfig(typeToProcess, featurePath, idField, Map.empty, Map.empty)
         val fieldConfig = fields :+ geomField
-        val options = BasicOptions(SimpleFeatureValidator.default, ParseMode.Default, ErrorMode(),
-          StandardCharsets.UTF_8, verbose = true)
 
         val config = configConvert.to(jsonConfig)
             .withFallback(fieldConvert.to(fieldConfig))
-            .withFallback(optsConvert.to(options))
+            .withFallback(optsConvert.to(BasicOptions.default))
             .toConfig
 
         (schema, config)
@@ -145,13 +153,16 @@ class JsonConverterFactory extends AbstractConverterFactory[JsonConverter, JsonC
 
 object JsonConverterFactory {
 
+  val TypeToProcess = "json"
+
   object JsonConfigConvert extends ConverterConfigConvert[JsonConfig] with OptionConvert {
 
-    override protected def decodeConfig(cur: ConfigObjectCursor,
-                                        `type`: String,
-                                        idField: Option[Expression],
-                                        caches: Map[String, Config],
-                                        userData: Map[String, Expression]): Either[ConfigReaderFailures, JsonConfig] = {
+    override protected def decodeConfig(
+        cur: ConfigObjectCursor,
+        `type`: String,
+        idField: Option[Expression],
+        caches: Map[String, Config],
+        userData: Map[String, Expression]): Either[ConfigReaderFailures, JsonConfig] = {
       for { path <- optional(cur, "feature-path").right } yield {
         JsonConfig(`type`, path, idField, caches, userData)
       }

@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -10,9 +10,11 @@ package org.locationtech.geomesa.accumulo.index
 
 import org.apache.accumulo.core.security.Authorizations
 import org.junit.runner.RunWith
-import org.locationtech.geomesa.accumulo.TestWithDataStore
+import org.locationtech.geomesa.accumulo.TestWithFeatureType
 import org.locationtech.geomesa.features.ScalaSimpleFeature
+import org.locationtech.geomesa.index.index.z3.Z3Index
 import org.locationtech.geomesa.utils.geotools.SimpleFeatureTypes
+import org.locationtech.geomesa.utils.geotools.SimpleFeatureTypes.Configs.IndexZShards
 import org.locationtech.geomesa.utils.index.GeoMesaSchemaValidator
 import org.specs2.mutable.Specification
 import org.specs2.runner.JUnitRunner
@@ -20,7 +22,7 @@ import org.specs2.runner.JUnitRunner
 import scala.collection.JavaConversions._
 
 @RunWith(classOf[JUnitRunner])
-class ConfigureShardsTest extends Specification with TestWithDataStore {
+class ConfigureShardsTest extends Specification with TestWithFeatureType {
 
   sequential
 
@@ -51,10 +53,12 @@ class ConfigureShardsTest extends Specification with TestWithDataStore {
     "configure from spec" >> {
       addFeatures(features)
       var shardSet: Set[Long] = Set[Long]()
-      Z3Index.getTableNames(sft, ds).foreach { table =>
+      val index = ds.manager.indices(sft).find(_.name == Z3Index.name)
+      index must beSome
+      index.get.getTableNames().foreach { table =>
         ds.connector.createScanner(table, new Authorizations()).foreach { r =>
           val bytes = r.getKey.getRow.getBytes
-          val shard = bytes(1).toInt
+          val shard = bytes(0).toInt
           shardSet = shardSet + shard
         }
       }
@@ -63,7 +67,7 @@ class ConfigureShardsTest extends Specification with TestWithDataStore {
 
     "throw exception" >> {
       val sftPrivate = SimpleFeatureTypes.createType("private", spec)
-      sftPrivate.setZShards(128)
+      sftPrivate.getUserData.put(IndexZShards, "128")
       GeoMesaSchemaValidator.validate(sftPrivate) must throwAn[IllegalArgumentException]
     }
   }

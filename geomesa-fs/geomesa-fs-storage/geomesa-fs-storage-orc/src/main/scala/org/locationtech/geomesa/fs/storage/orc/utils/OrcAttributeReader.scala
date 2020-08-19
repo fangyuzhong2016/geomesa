@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -10,12 +10,14 @@ package org.locationtech.geomesa.fs.storage.orc.utils
 
 import java.util.UUID
 
-import com.vividsolutions.jts.geom._
 import org.apache.orc.storage.ql.exec.vector._
 import org.geotools.filter.identity.FeatureIdImpl
 import org.geotools.geometry.jts.JTSFactoryFinder
 import org.locationtech.geomesa.features.serialization.ObjectType
 import org.locationtech.geomesa.features.serialization.ObjectType.ObjectType
+import org.locationtech.geomesa.fs.storage.orc.OrcFileSystemStorage
+import org.locationtech.geomesa.utils.text.WKBUtils
+import org.locationtech.jts.geom._
 import org.opengis.feature.simple.{SimpleFeature, SimpleFeatureType}
 
 /**
@@ -48,10 +50,11 @@ object OrcAttributeReader {
     var i = 0
     var col = 0
     while (i < sft.getAttributeCount) {
-      val bindings = ObjectType.selectType(sft.getDescriptor(i))
+      val descriptor = sft.getDescriptor(i)
+      val bindings = ObjectType.selectType(descriptor)
       if (columns.forall(_.contains(i))) {
         val reader = bindings.head match {
-          case ObjectType.GEOMETRY => createGeometryReader(bindings(1), batch.cols(col), batch.cols(col + 1), i)
+          case ObjectType.GEOMETRY => createGeometryReader(bindings(1), batch.cols, col, i)
           case ObjectType.DATE     => new DateReader(batch.cols(col).asInstanceOf[TimestampColumnVector], i)
           case ObjectType.STRING   => new StringReader(batch.cols(col).asInstanceOf[BytesColumnVector], i)
           case ObjectType.INT      => new IntReader(batch.cols(col).asInstanceOf[LongColumnVector], i)
@@ -60,7 +63,6 @@ object OrcAttributeReader {
           case ObjectType.DOUBLE   => new DoubleReader(batch.cols(col).asInstanceOf[DoubleColumnVector], i)
           case ObjectType.BOOLEAN  => new BooleanReader(batch.cols(col).asInstanceOf[LongColumnVector], i)
           case ObjectType.BYTES    => new BytesReader(batch.cols(col).asInstanceOf[BytesColumnVector], i)
-          case ObjectType.JSON     => new StringReader(batch.cols(col).asInstanceOf[BytesColumnVector], i)
           case ObjectType.UUID     => new UuidReader(batch.cols(col).asInstanceOf[BytesColumnVector], i)
           case ObjectType.LIST     => new ListReader(batch.cols(col).asInstanceOf[ListColumnVector], i, bindings(1))
           case ObjectType.MAP      => new MapReader(batch.cols(col).asInstanceOf[MapColumnVector], i, bindings(1), bindings(2))
@@ -69,11 +71,7 @@ object OrcAttributeReader {
         builder += reader
       }
       i += 1
-      if (bindings.head == ObjectType.GEOMETRY) {
-        col += 2
-      } else {
-        col += 1
-      }
+      col += OrcFileSystemStorage.fieldCount(descriptor)
     }
 
     if (fid) {
@@ -84,9 +82,12 @@ object OrcAttributeReader {
   }
 
   // noinspection LanguageFeature
-  private def createGeometryReader(binding: ObjectType, x: ColumnVector, y: ColumnVector, i: Int): OrcAttributeReader = {
+  private def createGeometryReader(binding: ObjectType, cols: Array[ColumnVector], col: Int, i: Int): OrcAttributeReader = {
     implicit def toDoubleColumnVector(vec: ColumnVector): DoubleColumnVector = vec.asInstanceOf[DoubleColumnVector]
     implicit def toListColumnVector(vec: ColumnVector): ListColumnVector = vec.asInstanceOf[ListColumnVector]
+
+    def x: ColumnVector = cols(col)
+    def y: ColumnVector = cols(col + 1)
 
     binding match {
       case ObjectType.POINT           => new PointReader(x, y, i)
@@ -95,6 +96,7 @@ object OrcAttributeReader {
       case ObjectType.POLYGON         => new PolygonReader(x, y, i)
       case ObjectType.MULTILINESTRING => new MultiLineStringReader(x, y, i)
       case ObjectType.MULTIPOLYGON    => new MultiPolygonReader(x, y, i)
+      case ObjectType.GEOMETRY        => new GeometryWkbReader(cols(col).asInstanceOf[BytesColumnVector], i)
       case _ => throw new IllegalArgumentException(s"Unexpected object type $binding")
     }
   }
@@ -218,7 +220,7 @@ object OrcAttributeReader {
           coordinates(i) = new Coordinate(x.vector(offset + i), y.vector(offset + i))
           i += 1
         }
-        sf.setAttribute(attribute, gf.createMultiPoint(coordinates))
+        sf.setAttribute(attribute, gf.createMultiPointFromCoords(coordinates))
       } else {
         sf.setAttribute(attribute, null)
       }
@@ -356,6 +358,24 @@ object OrcAttributeReader {
         sf.setAttribute(attribute, gf.createMultiPolygon(polygons))
       } else {
         sf.setAttribute(attribute, null)
+      }
+    }
+  }
+
+  // reads a WKB geometry from a vector and sets it in a simple feature
+  class GeometryWkbReader(val vector: BytesColumnVector, val attribute: Int)
+      extends VectorReaderAdapter[BytesColumnVector] {
+    override def getValue(row: Int): AnyRef = {
+      if (vector.noNulls || !vector.isNull(row)) {
+        var bytes = vector.vector(row)
+        if (vector.start(row) != 0 || vector.length(row) != bytes.length) {
+          val tmp = Array.ofDim[Byte](vector.length(row))
+          System.arraycopy(bytes, vector.start(row), tmp, 0, tmp.length)
+          bytes = tmp
+        }
+        WKBUtils.read(bytes)
+      } else {
+        null
       }
     }
   }
@@ -553,7 +573,6 @@ object OrcAttributeReader {
       case ObjectType.DOUBLE   => new GetVectorDouble { override val vector: DoubleColumnVector = vec.asInstanceOf[DoubleColumnVector] }
       case ObjectType.BOOLEAN  => new GetVectorBoolean { override val vector: LongColumnVector = vec.asInstanceOf[LongColumnVector] }
       case ObjectType.BYTES    => new GetVectorBytes { override val vector: BytesColumnVector = vec.asInstanceOf[BytesColumnVector] }
-      case ObjectType.JSON     => new GetVectorString { override val vector: BytesColumnVector = vec.asInstanceOf[BytesColumnVector] }
       case ObjectType.UUID     => new GetVectorUuid { override val vector: BytesColumnVector = vec.asInstanceOf[BytesColumnVector] }
       case _ => throw new IllegalArgumentException(s"Unexpected object type $binding")
     }

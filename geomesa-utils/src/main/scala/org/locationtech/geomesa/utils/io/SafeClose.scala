@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -8,79 +8,89 @@
 
 package org.locationtech.geomesa.utils.io
 
-import com.typesafe.scalalogging.LazyLogging
-import org.locationtech.geomesa.utils.io.SafeClose.AnyCloseable
-import org.locationtech.geomesa.utils.io.SafeFlush.AnyFlushable
+import org.locationtech.geomesa.utils.io.IsCloseableImplicits.{ArrayIsCloseable, IterableIsCloseable, OptionIsCloseable}
 
-import scala.util.control.NonFatal
+import scala.util.{Failure, Success, Try}
 
 /**
   * Closes anything with a 'close' method without throwing an exception
   */
 trait SafeClose {
-  def apply(c: AnyCloseable): Option[Throwable]
-}
 
-object SafeClose {
-  type AnyCloseable = Any { def close(): Unit }
-}
+  def apply[C : IsCloseable](c: C): Option[Throwable]
 
-/**
-  * Closes and logs any exceptions
-  */
-object CloseWithLogging extends SafeClose with LazyLogging {
-  override def apply(c: AnyCloseable): Option[Throwable] = try { c.close(); None } catch {
-    case NonFatal(e) => logger.warn(s"Error calling close on '$c': ", e); Some(e)
+  def apply[C1 : IsCloseable, C2 : IsCloseable](c1: C1, c2: C2): Option[Throwable] = {
+    apply(c1) match {
+      case None => apply(c2)
+      case Some(e) => apply(c2).foreach(e.addSuppressed); Some(e)
+    }
   }
+
+  def raise[C : IsCloseable](c: C): Unit = apply(c).foreach(e => throw e)
+
+  def raise[C1 : IsCloseable, C2 : IsCloseable](c1: C1, c2: C2): Unit = apply(c1, c2).foreach(e => throw e)
 }
 
-/**
-  * Closes and catches any exceptions
-  */
-object CloseQuietly extends SafeClose {
-  override def apply(c: AnyCloseable): Option[Throwable] = try { c.close(); None } catch {
-    case NonFatal(e) => Some(e)
+trait IsCloseable[-C] {
+  def close(obj: C): Try[Unit]
+}
+
+object IsCloseable extends IsCloseableImplicits[AutoCloseable] {
+  override protected def close(c: AutoCloseable): Try[Unit] = Try(c.close())
+}
+
+trait IsCloseableImplicits[C] {
+
+  protected def close(c: C): Try[Unit]
+
+  implicit val closeableIsCloseable: IsCloseable[C] = new IsCloseable[C] {
+    override def close(obj: C): Try[Unit] = IsCloseableImplicits.this.close(obj)
   }
+
+  implicit val iterableIsCloseable: IterableIsCloseable[C] = new IterableIsCloseable()
+  implicit val optionIsCloseable: OptionIsCloseable[C] = new OptionIsCloseable()
+  implicit val arrayIsCloseable: ArrayIsCloseable[C] = new ArrayIsCloseable()
 }
 
-/**
-  * Similar to java's try-with-resources, allows for using an object then closing in a finally block
-  */
-object WithClose {
-  // defined for up to 3 variables, implement more methods if needed
-  def apply[A <: AnyCloseable, B](a: A)(fn: (A) => B): B = try { fn(a) } finally { if (a != null) { a.close() }}
-  def apply[A <: AnyCloseable, B <: AnyCloseable, C](a: A, b: => B)(fn: (A, B) => C): C =
-    apply(a) { a => apply(b) { b => fn(a, b) } }
-  def apply[A <: AnyCloseable, B <: AnyCloseable, C <: AnyCloseable, D](a: A, b: => B, c: => C)(fn: (A, B, C) => D): D = {
-    apply(a) { a => apply(b) { b => apply(c) { c => fn(a, b, c) } } }
+object IsCloseableImplicits {
+
+  class IterableIsCloseable[C : IsCloseable] extends IsCloseable[Iterable[_ <: C]] {
+
+    private val ev = implicitly[IsCloseable[C]]
+
+    override def close(obj: Iterable[_ <: C]): Try[Unit] = {
+      var error: Throwable = null
+      obj.foreach { f =>
+        ev.close(f).failed.foreach { e =>
+          if (error == null) { error = e } else { error.addSuppressed(e) }
+        }
+      }
+      if (error == null) { Success() } else { Failure(error) }
+    }
   }
-}
 
-/**
-  * Flushes anything with a 'flush' method without throwing an exception
-  */
-trait SafeFlush {
-  def apply(c: AnyFlushable): Option[Throwable]
-}
+  class OptionIsCloseable[C : IsCloseable] extends IsCloseable[Option[_ <: C]] {
 
-object SafeFlush {
-  type AnyFlushable = Any { def flush(): Unit }
-}
+    private val ev = implicitly[IsCloseable[C]]
 
-/**
-  * Flushes and logs any exceptions
-  */
-object FlushWithLogging extends SafeFlush with LazyLogging {
-  override def apply(c: AnyFlushable): Option[Throwable] = try { c.flush(); None } catch {
-    case NonFatal(e) => logger.warn(s"Error calling flush on '$c': ", e); Some(e)
+    override def close(obj: Option[_ <: C]): Try[Unit] = {
+      obj match {
+        case None => Success()
+        case Some(o) => ev.close(o)
+      }
+    }
   }
-}
 
-/**
-  * Flushes and catches any exceptions
-  */
-object FlushQuietly extends SafeFlush {
-  override def apply(c: AnyFlushable): Option[Throwable] = try { c.flush(); None } catch {
-    case NonFatal(e) => Some(e)
+  class ArrayIsCloseable[C : IsCloseable] extends IsCloseable[Array[_ <: C]] {
+
+    private val ev = implicitly[IsCloseable[C]]
+
+    override def close(obj: Array[_ <: C]): Try[Unit] = {
+      var error: Throwable = null
+      obj.foreach { f =>
+        ev.close(f).failed.foreach(e => if (error == null) { error = e } else { error.addSuppressed(e) })
+      }
+      if (error == null) { Success() } else { Failure(error) }
+    }
   }
 }

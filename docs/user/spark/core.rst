@@ -52,10 +52,14 @@ to the ``spark-submit`` command via the ``--jars`` option:
 
 .. code-block:: bash
 
-    --jars file://path/to/geomesa-accumulo-spark-runtime_2.11-$VERSION.jar
+    --jars file://path/to/geomesa-accumulo-spark-runtime-accumulo2_2.11-$VERSION.jar
 
 or passed to Spark via the appropriate mechanism in notebook servers such as
 Jupyter (see :doc:`jupyter`) or Zeppelin.
+
+.. note::
+
+  See :ref:`spatial_rdd_providers` for details on choosing the correct GeoMesa Spark runtime JAR.
 
 The shaded JAR should also provide the dependencies needed for the
 :ref:`converter_rdd_provider` and :ref:`geotools_rdd_provider`, so these JARs
@@ -139,3 +143,20 @@ To save features, use the ``save()`` method:
 Note that some providers may be read-only.
 
 See :doc:`./providers` for details on specific provider implementations.
+
+
+GeoJSON Output
+^^^^^^^^^^^^^^
+
+The ``geomesa-spark-core`` module provides a means of exporting an ``RDD[SimpleFeature]`` to a
+`GeoJSON <http://geojson.org/>`__ string. This allows for quick visualization of the data in many front-end mapping
+libraries that support GeoJSON input such as Leaflet or Open Layers.
+
+To convert an RDD, import the implicit conversion and invoke the ``asGeoJSONString`` method.
+
+.. code-block:: scala
+
+    import org.locationtech.geomesa.spark.SpatialRDD._
+    val rdd: RDD[SimpleFeature] = ???
+    val geojson = rdd.asGeoJSONString
+

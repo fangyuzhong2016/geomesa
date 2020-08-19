@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -15,16 +15,16 @@ import org.apache.accumulo.core.security.Authorizations
 import org.geotools.data.{Query, Transaction}
 import org.geotools.filter.text.ecql.ECQL
 import org.junit.runner.RunWith
-import org.locationtech.geomesa.accumulo.TestWithDataStore
+import org.locationtech.geomesa.accumulo.TestWithFeatureType
 import org.locationtech.geomesa.accumulo.iterators.{BinAggregatingIterator, Z3Iterator}
 import org.locationtech.geomesa.curve.Z3SFC
 import org.locationtech.geomesa.features.ScalaSimpleFeature
 import org.locationtech.geomesa.index.conf.QueryHints._
 import org.locationtech.geomesa.index.conf.QueryProperties
+import org.locationtech.geomesa.index.index.z3.Z3Index
 import org.locationtech.geomesa.utils.bin.BinaryOutputEncoder
 import org.locationtech.geomesa.utils.bin.BinaryOutputEncoder.BIN_ATTRIBUTE_INDEX
 import org.locationtech.geomesa.utils.collection.SelfClosingIterator
-import org.locationtech.sfcurve.zorder.Z3
 import org.opengis.feature.simple.SimpleFeature
 import org.specs2.mutable.Specification
 import org.specs2.runner.JUnitRunner
@@ -32,7 +32,7 @@ import org.specs2.runner.JUnitRunner
 import scala.collection.JavaConversions._
 
 @RunWith(classOf[JUnitRunner])
-class Z3IdxStrategyTest extends Specification with TestWithDataStore {
+class Z3IdxStrategyTest extends Specification with TestWithFeatureType {
 
   sequential // note: test doesn't need to be sequential but it actually runs faster this way
 
@@ -77,13 +77,13 @@ class Z3IdxStrategyTest extends Specification with TestWithDataStore {
       skipped("used for debugging")
       import org.locationtech.geomesa.utils.geotools.RichSimpleFeatureType.RichSimpleFeatureType
 
-      Z3Index.getTableNames(sft, ds).foreach { table =>
+      ds.manager.indices(sft).filter(_.name == Z3Index.name).flatMap(_.getTableNames()).foreach { table =>
         println(table)
         ds.connector.createScanner(table, new Authorizations()).foreach { r =>
           val prefix = 2 // table sharing + split
           val bytes = r.getKey.getRow.getBytes
           val keyZ = Longs.fromByteArray(bytes.drop(prefix))
-          val (x, y, t) = Z3SFC(sft.getZ3Interval).invert(Z3(keyZ))
+          val (x, y, t) = Z3SFC(sft.getZ3Interval).invert(keyZ)
           val weeks = Shorts.fromBytes(bytes(prefix), bytes(prefix + 1))
           println(s"row: $weeks $x $y $t")
         }
@@ -212,24 +212,6 @@ class Z3IdxStrategyTest extends Specification with TestWithDataStore {
         f.getAttribute("derived").asInstanceOf[String] must beMatching("myname\\d")
       }
     }
-
-    "apply transforms using only the row key" >> {
-      val filter = "bbox(geom, 38, 59, 51, 61)" +
-          " AND dtg between '2010-05-07T06:00:00.000Z' and '2010-05-08T00:00:00.000Z'"
-      val query = new Query(sftName, ECQL.toFilter(filter), Array("geom", "dtg"))
-
-      val qps = ds.getQueryPlan(query)
-      forall(qps)(p => p.columnFamilies must containTheSameElementsAs(Seq(AccumuloColumnGroups.BinColumnFamily)))
-
-      val features = runQuery(query).toList
-      features must haveSize(4)
-      features.map(_.getID.toInt) must containTheSameElementsAs(6 to 9)
-      forall(features) { f =>
-        f.getAttributeCount mustEqual 2 // geom always gets added
-        f.getAttribute("geom") must not(beNull)
-        f.getAttribute("dtg") must not(beNull)
-      }
-    }.pendingUntilFixed("not implemented")
 
     "optimize for bin format" >> {
       val filter = "bbox(geom, 38, 59, 51, 61)" +

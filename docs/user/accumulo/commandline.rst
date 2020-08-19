@@ -21,25 +21,22 @@ here are Accumulo-specific.
 General Arguments
 -----------------
 
-Most commands require you to specify the connection to Accumulo. This generally includes a username and
-password (or Kerberos keytab file). Specify the username and password with ``--user`` and ``--password``
-(or ``-u`` and ``-p``). In order to avoid plaintext passwords in the bash history and process list,
-the password argument may be omitted, in which case it will be prompted for instead.
+Most commands require you to specify the connection to Accumulo. This generally includes the instance name,
+zookeeper hosts, username, and password (or Kerberos keytab file). Specify the instance with ``--instance-name``
+and ``--zookeepers``, and the username and password with ``--user`` and ``--password``. The password argument may be
+omitted in order to avoid plaintext credentials in the bash history and process list - in this case it will be
+prompted case for later. To use Kerberos authentication instead of a password, use ``--keytab`` with a path to a
+Kerberos keytab file containing an entry for the specified user. Since a keytab file allows authentication
+without any further constraints, it should be protected appropriately.
 
-To use Kerberos authentication instead of a password, use ``--keytab`` with a path to a Kerberos keytab
-file containing an entry for the specified user. Since a keytab file allows authentication without any
-further constraints, it should be protected appropriately.
+Instead of specifying the cluster connection explicitly, an appropriate ``accumulo-client.properties`` (for Accumulo
+2) or ``client.conf`` (for Accumulo 1) may be added to the classpath. See the
+`Accumulo documentation <https://accumulo.apache.org/docs/2.x/getting-started/clients#creating-an-accumulo-client>`_
+for information on the necessary configuration keys. Any explicit command-line arguments will take precedence over
+the configuration file.
 
-If the necessary environment variables are set (generally as part of the install process), the tools should
-connect automatically to the Accumulo instance. To specify the connection instead, use ``--instance-name``
-and ``--zookeepers`` (or ``-i`` and ``-z``).
-
-The ``--auths`` and ``--visibilities`` arguments correspond to the ``AccumuloDataStore`` parameters
-``geomesa.security.auths`` and ``geomesa.security.visibilities``, respectively. See :ref:`authorizations`
-and :ref:`accumulo_visibilities` for more information.
-
-The ``--mock`` argument can be used to run against a mock Accumulo instance, for testing. In particular,
-this can be useful for verifying ingest converters.
+The ``--auths`` argument corresponds to the ``AccumuloDataStore`` parameter ``geomesa.security.auths``. See
+:ref:`authorizations` and :ref:`accumulo_visibilities` for more information.
 
 Commands
 --------
@@ -123,9 +120,9 @@ based on the default date attribute for the schema. Due to table keys, this is m
 and the ID index when used with ``--z3-feature-ids``. Other indices will typically be compacted in full, as they
 are not partitioned by date.
 
-This command is particularly useful when using :ref:`ageoff_accumulo`, to ensure that expired rows are physically
-deleted from disk. In this scenario, the ``--from`` parameter should be set to the age-off period, and the
-``--duration`` parameter should be set based on how often compactions are run. The intent is to only compact
+This command is particularly useful when using :ref:`accumulo_feature_expiry`, to ensure that expired rows are
+physically deleted from disk. In this scenario, the ``--from`` parameter should be set to the age-off period, and
+the ``--duration`` parameter should be set based on how often compactions are run. The intent is to only compact
 the data that may have aged-off since the last compaction. Note that the time periods align with attribute-based
 age-off; ingest time age-off may need a time buffer, assuming some relationship between ingest time and the default
 date attribute.
@@ -135,10 +132,17 @@ This may be useful for a static data set, which will not be automatically compac
 stops growing. In this scenario, the ``--from`` and ``--duration`` parameters can be omitted, so that the
 entire data set is compacted.
 
+.. _accumulo_age_off_command:
+
 ``configure-age-off``
 ^^^^^^^^^^^^^^^^^^^^^
 
-List, add or remove age-off on a given feature type. See :ref:`ageoff_accumulo` for more information.
+List, add or remove age-off on a given feature type. See :ref:`accumulo_feature_expiry` for more information.
+
+.. warning::
+
+  Any manually configured age-off iterators should be removed before using this command, as they may
+  not operate correctly due to the configuration name.
 
 ======================== =============================================================
 Argument                 Description
@@ -152,14 +156,32 @@ Argument                 Description
 ``--dtg``                Use attribute-based age-off on the specified date field
 ======================== =============================================================
 
-The ``--list`` argument will display any configured age-off.
+The ``--list`` argument will display any configured age-off::
 
-The ``--remove`` argument will remove any configured age-off.
+  $ geomesa-accumulo configure-age-off -c test_catalog -f test_feature --list
+  INFO  Attribute age-off: None
+  INFO  Timestamp age-off: name:age-off, priority:10, class:org.locationtech.geomesa.accumulo.iterators.AgeOffIterator, properties:{retention=PT1M}
 
-The ``--set`` argument will configure age-off. When using ``--set``, ``--expiry`` must also be provided.
-``--expiry`` can be any time duration string, specified in natural language. If ``--dtg`` is provided,
-age-off will be based on the specified date-type attribute. Otherwise, age-off will be based on ingest
-time.
+The ``--remove`` argument will remove any configured age-off::
+
+  $ geomesa-accumulo configure-age-off -c test_catalog -f test_feature --remove
+
+The ``--set`` argument will configure age-off. This will remove any existing age-off configuration and replace it
+with the new specification. When using ``--set``, ``--expiry`` must also be provided. ``--expiry`` can be any time
+duration string, specified in natural language.
+
+If ``--dtg`` is provided, age-off will be based on the specified date-type attribute::
+
+  $ geomesa-accumulo configure-age-off -c test_catalog -f test_feature --set --expiry '1 day' --dtg my_date_attribute
+
+Otherwise, age-off will be based on ingest time::
+
+  $ geomesa-accumulo configure-age-off -c test_catalog -f test_feature --set --expiry '1 day'
+
+.. warning::
+
+    Ingest time expiration requires that logical timestamps are disabled in the schema. See
+    :ref:`logical_timestamps` for more information.
 
 ``configure-stats``
 ^^^^^^^^^^^^^^^^^^^
@@ -233,52 +255,4 @@ Argument                 Description
 ======================== =========================================================
 ``-c, --catalog *``      The catalog table containing schema metadata
 ``-f, --feature-name *`` The name of the schema
-======================== =========================================================
-
-.. _accumulo_tools_raster:
-
-``ingest-raster``
-^^^^^^^^^^^^^^^^^
-
-Ingest one or more raster image files into Geomesa. Input files, GeoTIFF or DTED, should be located
-on the local file system.
-
-.. warning::
-
-    In order to ingest rasters, ensure that you install JAI and JLine as described under
-    :ref:`setting_up_accumulo_commandline`.
-
-Input raster files are assumed to have CRS of ``EPSG:4326``. Non-``EPSG:4326`` files will need to be
-converted into ``EPSG:4326`` raster files before ingestion. An example of doing conversion with GDAL is::
-
-    gdalwarp -t_srs EPSG:4326 input_file out_file
-
-======================== =========================================================
-Argument                 Description
-======================== =========================================================
-``-t, --raster-table *`` Accumulo table for storing raster data
-``-f, --file *``         A single raster file or a directly containing raster files to ingest
-``-F, --format``         The format of raster files, which must match the file extension
-``-P, --parallel-level`` Maximum number of local threads for ingesting multiple raster files
-``-T, --timestamp``      Ingestion time (defaults to current time)
-``--write-memory``       Memory allocation for ingestion operation
-``--write-threads``      Numer of threads used for writing raster data
-``--query-threads``      Number of threads used for querying raster data
-======================== =========================================================
-
-.. warning::
-
-    When ingesting rasters from a directory, ensure that the ``--format`` argument matches the file extension of
-    the files. Otherwise, no files will be ingested.
-
-``delete-raster``
-^^^^^^^^^^^^^^^^^
-
-Delete ingested rasters.
-
-======================== =========================================================
-Argument                 Description
-======================== =========================================================
-``-t, --raster-table *`` Accumulo table for storing raster data
-``--force``              Delete without prompting for confirmation
 ======================== =========================================================

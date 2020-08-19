@@ -52,7 +52,7 @@ master_doc = 'index'
 # General information about the project.
 project = u'GeoMesa'
 # note: shown in our custom footer
-#copyright = u'2013-2017 Commonwealth Computer Research, Inc'
+copyright = u'2013-2020'
 author = u''
 
 # The version info for the project you're documenting, acts as replacement for
@@ -64,12 +64,10 @@ author = u''
 from target.versions import release,version,version_devel,release_last
 
 # Other versions and variables unlikely to change on every point release
-release_1_2 = '1.2.7.3'
 release_eclipse = '1.2.0'
 url_github_archive = "https://github.com/locationtech/geomesa/archive"
 
-url_locationtech_release = "https://repo.locationtech.org/content/repositories/geomesa-releases/org/locationtech/geomesa"
-
+url_locationtech_release = "https://repo.eclipse.org/content/repositories/geomesa-releases/org/locationtech/geomesa"
 
 # RST appended to every file. Used for global substitions.
 # (the "%(release)s" substitutions are done by the Python format() method
@@ -100,25 +98,23 @@ rst_epilog = """
 
 .. |development| replace:: %(version_devel)s
 
-.. |release_1_2| replace:: %(release_1_2)s
-
-.. |release_1_2_tarball| replace::  %(url_locationtech_release)s/geomesa-dist/%(release_1_2)s/geomesa-dist-%(release_1_2)s-bin.tar.gz
-
-.. |release_1_2_source_tarball| replace:: %(url_github_archive)s/geomesa-%(release_1_2)s.tar.gz
-
 .. |maven_version| replace:: 3.5.2 or later
 
-.. |geoserver_version| replace:: 2.12.x
+.. |geoserver_version| replace:: 2.17.x
 
-.. |geotools_version| replace:: 18.x
+.. |geotools_version| replace:: 23.x
 
-.. |accumulo_version| replace:: 1.9.2 or later
+.. |accumulo_required_version| replace:: 1.7.x, 1.8.x, 1.9.x or 2.0.x
 
-.. |hbase_version| replace:: 1.3.x or 1.4.x
+.. |accumulo_supported_versions| replace:: versions 1.7.x, 1.8.x, 1.9.x and 2.0.x
 
-.. |hbase_bundled_version| replace:: 1.3.1
+.. |hbase_required_version| replace::  1.4.x or 2.2.x
 
-.. |hadoop_version| replace:: 2.6 or later
+.. |hbase_supported_versions| replace:: versions 1.4.x and 2.2.x
+
+.. |hbase_bundled_version| replace:: 2.2.3
+
+.. |hadoop_version| replace:: 2.8 or later
 
 .. |zookeeper_version| replace:: 3.4.5 or later
 
@@ -126,13 +122,18 @@ rst_epilog = """
 
 .. |cassandra_version| replace:: 3.x
 
-.. |spark_version| replace:: 2.2.x or 2.3.x
+.. |redis_version| replace:: 5.0.x
+
+.. |kudu_version| replace:: 1.7.x
+
+.. |spark_required_version| replace:: 2.2.x, 2.3.x or 2.4.x
+
+.. |spark_supported_versions| replace:: versions 2.2.x, 2.3.x and 2.4.x
 
 .. |release_last| replace:: %(release_last)s
 
 """ % {"release": release,
        "release_last": release_last,
-       "release_1_2": release_1_2,
        "release_eclipse": release_eclipse,
        "version_devel": version_devel,
        "url_locationtech_release": url_locationtech_release,
@@ -192,7 +193,12 @@ html_theme = 'sphinx_rtd_theme'
 # Theme options are theme-specific and customize the look and feel of a theme
 # further.  For a list of options available for each theme, see the
 # documentation.
-#html_theme_options = {}
+html_theme_options = {
+  'canonical_url': 'https://www.geomesa.org/documentation/',
+  'analytics_id': 'UA-53087457-1',
+  'collapse_navigation': True,
+  'navigation_depth': 4
+}
 
 # Add any paths that contain custom themes here, relative to this directory.
 html_theme_path = [sphinx_rtd_theme.get_html_theme_path()]
@@ -251,7 +257,8 @@ html_static_path = ['_static']
 #html_split_index = False
 
 # If true, links to the reST sources are added to the pages.
-#html_show_sourcelink = True
+# note: shown in our custom footer
+html_show_sourcelink = False
 
 # If true, "Created using Sphinx" is shown in the HTML footer. Default is True.
 # note: shown in our custom footer

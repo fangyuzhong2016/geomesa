@@ -1,0 +1,12 @@
+hbase-client
+hbase-common
+hbase-protocol
+hbase-server
+hbase-shaded-miscellaneous
+hbase-shaded-netty
+hbase-shaded-protobuf
+hbase-mapreduce
+htrace
+metrics-core-2
+metrics-core-3
+netty

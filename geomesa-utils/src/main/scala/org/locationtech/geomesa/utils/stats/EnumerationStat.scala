@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -20,14 +20,9 @@ import scala.reflect.ClassTag
   * @param property property name the enumeration is being made for
   * @tparam T some type T (which is restricted by the stat parser upstream of Histogram instantiation)
   */
-class EnumerationStat[T] private [stats] (val sft: SimpleFeatureType,
-                                          val property: String)
-                                         (implicit ct: ClassTag[T]) extends Stat {
+class EnumerationStat[T](val sft: SimpleFeatureType, val property: String)(implicit val ct: ClassTag[T]) extends Stat {
 
   override type S = EnumerationStat[T]
-
-  @deprecated("property")
-  lazy val attribute: Int = i
 
   private val i = sft.indexOf(property)
   private [stats] val enumeration = scala.collection.mutable.HashMap.empty[T, Long].withDefaultValue(0)

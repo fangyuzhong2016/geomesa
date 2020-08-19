@@ -1,10 +1,10 @@
 Installing GeoMesa Kafka
 ========================
 
-.. warning::
+.. note::
 
-    Using the `Kafka <http://kafka.apache.org/>`_ module requires Kafka |kafka_version|
-    and ZooKeeper |zookeeper_version|.
+    GeoMesa currently supports Kafka version |kafka_version|. However, not all features are supported
+    for versions prior to 1.0.
 
 Installing from the Binary Distribution
 ---------------------------------------
@@ -107,8 +107,7 @@ Installing GeoMesa Kafka in GeoServer
 
 .. warning::
 
-    The GeoMesa Kafka GeoServer plugin is tested against GeoServer
-    |geoserver_version| and GeoTools |geotools_version|.
+    See :ref:`geoserver_versions` to ensure that GeoServer is compatible with your GeoMesa version.
 
 As described in section :ref:`geomesa_and_geoserver`, GeoMesa implements a
 `GeoTools`_-compatible data store. This makes it possible
@@ -133,10 +132,7 @@ and installing `the WPS plugin`_.
         -server -Djava.awt.headless=true"
 
     The value of ``-Xmx`` should be as large as your system will permit; this
-    is especially important for the Kafka plugin. You
-    should also consider passing ``-DGEOWEBCACHE_CACHE_DIR=/tmp/$USER-gwc``
-    and ``-DEPSG-HSQL.directory=/tmp/$USER-hsql``
-    as well. Be sure to restart Tomcat for changes to take place.
+    is especially important for the Kafka plugin. Be sure to restart Tomcat for changes to take place.
 
 To install GeoMesa's GeoServer plugin we can use the script ``manage-geoserver-plugins.sh`` in ``bin`` directory
 of the appropriate GeoMesa Kafka binary distribution (see :ref:`versions_and_downloads`).
@@ -234,12 +230,3 @@ connection). Edit the script before running to ensure the correct JAR versions
 are specified.
 
 Restart GeoServer after the JARs are installed.
-
-Jackson Version
-^^^^^^^^^^^^^^^
-
-.. warning::
-
-    Some GeoMesa functions (in particular Arrow conversion) requires ``jackson-core-2.6.x``. Some versions
-    of GeoServer ship with an older version, ``jackson-core-2.5.0.jar``. After installing the GeoMesa
-    GeoServer plugin, be sure to delete the older JAR from GeoServer's ``WEB-INF/lib`` folder.

@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -10,9 +10,8 @@ package org.locationtech.geomesa.arrow.vector
 
 import java.util.Date
 
-import org.apache.arrow.memory.BufferAllocator
 import org.apache.arrow.vector.complex.FixedSizeListVector
-import org.apache.arrow.vector.{BigIntVector, DirtyRootAllocator, IntVector}
+import org.apache.arrow.vector.{BigIntVector, IntVector}
 import org.geotools.util.Converters
 import org.junit.runner.RunWith
 import org.locationtech.geomesa.arrow.vector.SimpleFeatureVector.SimpleFeatureEncoding
@@ -27,8 +26,6 @@ import org.specs2.runner.JUnitRunner
 @RunWith(classOf[JUnitRunner])
 class SimpleFeatureVectorTest extends Specification {
 
-  implicit val allocator: BufferAllocator = new DirtyRootAllocator(Long.MaxValue, 6.toByte)
-
   val sft = SimpleFeatureTypes.createType("test", "name:String,age:Int,dtg:Date,*geom:Point:srid=4326")
   val features = (0 until 10).map { i =>
     ScalaSimpleFeature.create(sft, s"28a12c18-e5ae-4c04-ae7b-bf7cdbfaf23$i", s"name0${i % 2}",
@@ -36,7 +33,7 @@ class SimpleFeatureVectorTest extends Specification {
   }
 
   val uuidSft = SimpleFeatureTypes.createType(sft.getTypeName,
-    SimpleFeatureTypes.encodeType(sft) + s";${Configs.FID_UUID_KEY}=true")
+    SimpleFeatureTypes.encodeType(sft) + s";${Configs.FidsAreUuids}=true")
 
   "SimpleFeatureVector" should {
     "set and get values" >> {
@@ -284,9 +281,5 @@ class SimpleFeatureVectorTest extends Specification {
         forall(0 until 10)(i => vector.reader.get(i) mustEqual nulls(i))
       }
     }
-  }
-
-  step {
-    allocator.close()
   }
 }

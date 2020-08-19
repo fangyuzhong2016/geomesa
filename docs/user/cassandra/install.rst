@@ -1,6 +1,10 @@
 Installing GeoMesa Cassandra
 ============================
 
+.. note::
+
+    GeoMesa currently supports Cassandra version |cassandra_version|.
+
 Connecting to Cassandra
 -----------------------
 
@@ -92,7 +96,6 @@ tools ``lib`` folder. To do this, use the scripts provided with the distribution
 .. code-block:: bash
 
     $ bin/install-cassandra-jars.sh lib
-    $ bin/install-tools-jar.sh lib
 
 Due to licensing restrictions, dependencies for shape file support must be separately installed.
 Do this with the following commands:
@@ -118,9 +121,7 @@ Installing GeoMesa Cassandra in GeoServer
 
 .. warning::
 
-   GeoServer 2.13.0 and 2.13.1 are not recommended due to two serious bugs:
-     * GeoMesa WPS processes are not triggered correctly, and will run slowly or not at all
-     * GeoMesa count optimizations are bypassed, potentially resulting in large duplicate scans for WFS queries
+    See :ref:`geoserver_versions` to ensure that GeoServer is compatible with your GeoMesa version.
 
 The GeoMesa Cassandra distribution includes a GeoServer plugin for including
 Cassandra data stores in GeoServer. The plugin files are in the
@@ -133,19 +134,12 @@ are not bundled to allow for different versions. The distribution includes a scr
 the JARs: ``bin/install-cassandra-jars.sh``. Call it with the path to the GeoServer ``WEB-INF/lib`` directory.
 By default, it will install the following JARs:
 
- * cassandra-all-3.0.11.jar
- * cassandra-driver-core-3.0.0.jar
- * cassandra-driver-mapping-3.0.0.jar
- * netty-all-4.0.33.Final.jar
- * metrics-core-3.1.2.jar
+ * cassandra-all-3.11.4.jar
+ * cassandra-driver-core-3.7.2.jar
+ * cassandra-driver-mapping-3.7.2.jar
+ * netty-all-4.1.17.Final.jar
+ * metrics-core-3.2.6.jar
+ * logback-core-1.1.3.jar
+ * logback-classic-1.1.3.jar
 
 Restart GeoServer after the JARs are installed.
-
-Jackson Version
-^^^^^^^^^^^^^^^
-
-.. warning::
-
-    Some GeoMesa functions (in particular Arrow conversion) requires ``jackson-core-2.6.x``. Some versions
-    of GeoServer ship with an older version, ``jackson-core-2.5.0.jar``. After installing the GeoMesa
-    GeoServer plugin, be sure to delete the older JAR from GeoServer's ``WEB-INF/lib`` folder.

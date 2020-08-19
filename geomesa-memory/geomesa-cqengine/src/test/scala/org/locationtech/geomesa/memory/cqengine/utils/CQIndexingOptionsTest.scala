@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -15,10 +15,10 @@ import com.googlecode.cqengine.index.hash.HashIndex
 import com.googlecode.cqengine.index.navigable.NavigableIndex
 import com.googlecode.cqengine.index.radix.RadixTreeIndex
 import com.googlecode.cqengine.index.unique.UniqueIndex
-import com.vividsolutions.jts.geom.Geometry
+import org.locationtech.jts.geom.Geometry
 import org.junit.runner.RunWith
 import org.locationtech.geomesa.memory.cqengine.GeoCQEngine
-import org.locationtech.geomesa.memory.cqengine.index.GeoIndex
+import org.locationtech.geomesa.memory.cqengine.index.AbstractGeoIndex
 import org.locationtech.geomesa.utils.geotools.SimpleFeatureTypes
 import org.opengis.feature.simple.SimpleFeature
 import org.specs2.mutable.Specification
@@ -71,7 +71,7 @@ class CQIndexingOptionsTest extends Specification {
         }
       }
 
-      nameToIndex.get("Where") must beSome[AttributeIndex[_, SimpleFeature]](beAnInstanceOf[GeoIndex[Geometry, SimpleFeature]])
+      nameToIndex.get("Where") must beSome[AttributeIndex[_, SimpleFeature]](beAnInstanceOf[AbstractGeoIndex[Geometry, SimpleFeature]])
 
       // Who is a string field and the 'default' hint is used.  This should be a Radix index
       nameToIndex.get("Who")  must beSome[AttributeIndex[_, SimpleFeature]](beAnInstanceOf[RadixTreeIndex[String, SimpleFeature]])

@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -8,36 +8,42 @@
 
 package org.locationtech.geomesa.tools.export.formats
 
-import java.io.Writer
+import java.io.{OutputStream, OutputStreamWriter}
 
-import org.geotools.geojson.feature.FeatureJSON
+import org.locationtech.geomesa.features.serialization.GeoJsonSerializer
+import org.locationtech.geomesa.tools.export.formats.FeatureExporter.{ByteCounter, ByteCounterExporter}
 import org.opengis.feature.simple.{SimpleFeature, SimpleFeatureType}
 
-class GeoJsonExporter(writer: Writer) extends FeatureExporter {
+class GeoJsonExporter(os: OutputStream, counter: ByteCounter) extends ByteCounterExporter(counter) {
 
-  private val json = new FeatureJSON()
+  private val writer = GeoJsonSerializer.writer(new OutputStreamWriter(os))
 
-  private var first = true
+  private var serializer: GeoJsonSerializer = _
 
-  override def start(sft: SimpleFeatureType): Unit = writer.write("""{"type":"FeatureCollection","features":[""")
+  override def start(sft: SimpleFeatureType): Unit = {
+    serializer = new GeoJsonSerializer(sft)
+    serializer.startFeatureCollection(writer)
+  }
 
   override def export(features: Iterator[SimpleFeature]): Option[Long] = {
     var count = 0L
-    features.foreach { feature =>
-      if (first) {
-        first = false
-      } else {
-        writer.write(",")
-      }
-      json.writeFeature(feature, writer)
+    while (features.hasNext) {
+      serializer.write(writer, features.next)
       count += 1L
     }
     writer.flush()
     Some(count)
   }
 
-  override def close(): Unit  = {
-    writer.write("]}\n")
-    writer.close()
+  override def close(): Unit = {
+    try {
+      if (serializer != null) {
+        serializer.endFeatureCollection(writer)
+        writer.flush()
+        os.write('\n')
+      }
+    } finally {
+      writer.close() // also closes underlying writer and output stream
+    }
   }
 }

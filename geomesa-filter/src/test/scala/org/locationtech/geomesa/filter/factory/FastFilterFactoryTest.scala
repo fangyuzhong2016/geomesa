@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -9,7 +9,8 @@
 
 package org.locationtech.geomesa.filter.factory
 
-import org.geotools.factory.{CommonFactoryFinder, Hints}
+import org.geotools.factory.CommonFactoryFinder
+import org.geotools.util.factory.Hints
 import org.junit.runner.RunWith
 import org.locationtech.geomesa.features.ScalaSimpleFeature
 import org.locationtech.geomesa.filter.expression.{FastPropertyName, OrHashEquality, OrSequentialEquality}
@@ -42,7 +43,7 @@ class FastFilterFactoryTest extends Specification {
     }
     "create fast property names via ECQL" >> {
       val sft = SimpleFeatureTypes.createType("test", "geom:Point:srid=4326")
-      val bbox = FastFilterFactory.toFilter(sft, "bbox(geom, -180, -90, 180, 90)")
+      val bbox = FastFilterFactory.toFilter(sft, "bbox(geom, -179, -89, 179, 89)")
       bbox.asInstanceOf[BBOX].getExpression1 must beAnInstanceOf[FastPropertyName]
     }
     "create sequential OR filter" >> {
@@ -79,6 +80,12 @@ class FastFilterFactoryTest extends Specification {
       foreach(Seq("blu", "qux")) { name =>
         or.evaluate(ScalaSimpleFeature.create(sft, "1", name, "POINT (45 55)")) must beFalse
       }
+    }
+    "kick out bad filters from optimize" >> {
+      val sft = SimpleFeatureTypes.createType("test", "name:String,*geom:Point:srid=4326")
+      FastFilterFactory.toFilter(sft, "name ilike '%abc\\'") must throwA[IllegalArgumentException]
+      FastFilterFactory.toFilter(sft, "name like '%abc\\'") must throwA[IllegalArgumentException]
+      ok
     }
   }
 }

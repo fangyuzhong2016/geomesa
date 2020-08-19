@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -11,11 +11,12 @@ package org.locationtech.geomesa.fs.storage.orc.utils
 import java.nio.charset.StandardCharsets
 import java.util.UUID
 
-import com.vividsolutions.jts.geom._
 import org.apache.orc.storage.ql.exec.vector._
 import org.locationtech.geomesa.features.serialization.ObjectType
 import org.locationtech.geomesa.features.serialization.ObjectType.ObjectType
 import org.locationtech.geomesa.fs.storage.orc.OrcFileSystemStorage
+import org.locationtech.geomesa.utils.text.WKBUtils
+import org.locationtech.jts.geom._
 import org.opengis.feature.simple.{SimpleFeature, SimpleFeatureType}
 
 /**
@@ -45,9 +46,10 @@ object OrcAttributeWriter {
     var i = 0
     var col = 0
     while (i < sft.getAttributeCount) {
-      val bindings = ObjectType.selectType(sft.getDescriptor(i))
+      val descriptor = sft.getDescriptor(i)
+      val bindings = ObjectType.selectType(descriptor)
       val writer = bindings.head match {
-        case ObjectType.GEOMETRY => col += 1; createGeometryWriter(bindings(1), batch.cols(col - 1), batch.cols(col), i)
+        case ObjectType.GEOMETRY => createGeometryWriter(bindings(1), batch.cols, col, i)
         case ObjectType.DATE     => new DateWriter(batch.cols(col).asInstanceOf[TimestampColumnVector], i)
         case ObjectType.STRING   => new StringWriter(batch.cols(col).asInstanceOf[BytesColumnVector], i)
         case ObjectType.INT      => new IntWriter(batch.cols(col).asInstanceOf[LongColumnVector], i)
@@ -56,7 +58,6 @@ object OrcAttributeWriter {
         case ObjectType.DOUBLE   => new DoubleWriter(batch.cols(col).asInstanceOf[DoubleColumnVector], i)
         case ObjectType.BOOLEAN  => new BooleanWriter(batch.cols(col).asInstanceOf[LongColumnVector], i)
         case ObjectType.BYTES    => new BytesWriter(batch.cols(col).asInstanceOf[BytesColumnVector], i)
-        case ObjectType.JSON     => new StringWriter(batch.cols(col).asInstanceOf[BytesColumnVector], i)
         case ObjectType.UUID     => new UuidWriter(batch.cols(col).asInstanceOf[BytesColumnVector], i)
         case ObjectType.LIST     => new ListWriter(batch.cols(col).asInstanceOf[ListColumnVector], i, bindings(1))
         case ObjectType.MAP      => new MapWriter(batch.cols(col).asInstanceOf[MapColumnVector], i, bindings(1), bindings(2))
@@ -64,7 +65,7 @@ object OrcAttributeWriter {
       }
       builder += writer
       i += 1
-      col += 1
+      col += OrcFileSystemStorage.fieldCount(descriptor)
     }
 
     if (fid) {
@@ -75,9 +76,12 @@ object OrcAttributeWriter {
   }
 
   // noinspection LanguageFeature
-  private def createGeometryWriter(binding: ObjectType, x: ColumnVector, y: ColumnVector, i: Int): OrcAttributeWriter = {
+  private def createGeometryWriter(binding: ObjectType, cols: Array[ColumnVector], col: Int, i: Int): OrcAttributeWriter = {
     implicit def toDoubleColumnVector(vec: ColumnVector): DoubleColumnVector = vec.asInstanceOf[DoubleColumnVector]
     implicit def toListColumnVector(vec: ColumnVector): ListColumnVector = vec.asInstanceOf[ListColumnVector]
+
+    def x: ColumnVector = cols(col)
+    def y: ColumnVector = cols(col + 1)
 
     binding match {
       case ObjectType.POINT           => new PointWriter(x, y, i)
@@ -86,6 +90,7 @@ object OrcAttributeWriter {
       case ObjectType.POLYGON         => new PolygonWriter(x, y, i)
       case ObjectType.MULTILINESTRING => new MultiLineStringWriter(x, y, i)
       case ObjectType.MULTIPOLYGON    => new MultiPolygonWriter(x, y, i)
+      case ObjectType.GEOMETRY        => new GeometryWkbWriter(cols(col).asInstanceOf[BytesColumnVector], i)
       case _ => throw new IllegalArgumentException(s"Unexpected object type $binding")
     }
   }
@@ -429,6 +434,20 @@ object OrcAttributeWriter {
     }
   }
 
+  // writes a geometry attribute to a vector
+  class GeometryWkbWriter(val vector: BytesColumnVector, val attribute: Int)
+      extends VectorWriterAdapter[Geometry, BytesColumnVector] {
+    override def setValue(value: Geometry, row: Int): Unit = {
+      if (value == null) {
+        vector.noNulls = false
+        vector.isNull(row) = true
+      } else {
+        val bytes = WKBUtils.write(value)
+        vector.setRef(row, bytes, 0, bytes.length)
+      }
+    }
+  }
+
   /**
     * Writes a java.util.List attribute to a vector
     *
@@ -636,7 +655,6 @@ object OrcAttributeWriter {
       case ObjectType.DOUBLE   => new SetVectorDouble { override val vector: DoubleColumnVector = vec.asInstanceOf[DoubleColumnVector] }
       case ObjectType.BOOLEAN  => new SetVectorBoolean { override val vector: LongColumnVector = vec.asInstanceOf[LongColumnVector] }
       case ObjectType.BYTES    => new SetVectorBytes { override val vector: BytesColumnVector = vec.asInstanceOf[BytesColumnVector] }
-      case ObjectType.JSON     => new SetVectorString { override val vector: BytesColumnVector = vec.asInstanceOf[BytesColumnVector] }
       case ObjectType.UUID     => new SetVectorUuid { override val vector: BytesColumnVector = vec.asInstanceOf[BytesColumnVector] }
       case _ => throw new IllegalArgumentException(s"Unexpected object type $binding")
     }

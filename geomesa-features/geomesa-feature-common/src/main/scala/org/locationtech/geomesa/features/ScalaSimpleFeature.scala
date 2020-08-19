@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -8,36 +8,55 @@
 
 package org.locationtech.geomesa.features
 
+import java.util
 import java.util.Collections
-import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicInteger
 
 import org.locationtech.geomesa.features.AbstractSimpleFeature.{AbstractImmutableSimpleFeature, AbstractMutableSimpleFeature}
-import org.locationtech.geomesa.utils.collection.AtomicBitSet
+import org.locationtech.geomesa.utils.collection.WordBitSet
+import org.locationtech.geomesa.utils.io.Sizable
 import org.opengis.feature.simple.{SimpleFeature, SimpleFeatureType}
 
 /**
-  * Simple feature implementation optimized to instantiate from serialization
-  *
-  * @param sft simple feature type
-  * @param initialId simple feature id
-  * @param initialValues if provided, must already be converted into the appropriate types
-  * @param initialUserData user data
-  */
-class ScalaSimpleFeature(sft: SimpleFeatureType,
-                         initialId: String,
-                         initialValues: Array[AnyRef] = null,
-                         initialUserData: java.util.Map[AnyRef, AnyRef] = null)
-    extends AbstractMutableSimpleFeature(sft, initialId, initialUserData) {
+ * Simple feature implementation optimized to instantiate from serialization
+ *
+ * @param sft simple feature type
+ * @param values array of attribute values
+ */
+class ScalaSimpleFeature private (sft: SimpleFeatureType, values: Array[AnyRef])
+    extends AbstractMutableSimpleFeature(sft) with Sizable {
 
-  @deprecated("use primary constructor")
-  def this(initialId: String, sft: SimpleFeatureType) = {
-    this(sft, initialId, null, null)
+  private var userData: java.util.Map[AnyRef, AnyRef] = _
+
+  /**
+   * Public constructor
+   *
+   * @param sft simple feature type
+   * @param id simple feature id
+   * @param values if provided, must already be converted into the appropriate types
+   * @param userData user data
+   */
+  def this(
+      sft: SimpleFeatureType,
+      id: String,
+      values: Array[AnyRef] = null,
+      userData: java.util.Map[AnyRef, AnyRef] = null) = {
+    this(sft, if (values == null) { Array.ofDim[AnyRef](sft.getAttributeCount) } else { values })
+    this.id = id
+    this.userData = userData
   }
-
-  private val values = if (initialValues == null) { Array.ofDim[AnyRef](sft.getAttributeCount) } else { initialValues }
 
   override def setAttributeNoConvert(index: Int, value: AnyRef): Unit = values(index) = value
   override def getAttribute(index: Int): AnyRef = values(index)
+
+  override def getUserData: java.util.Map[AnyRef, AnyRef] = synchronized {
+    if (userData == null) {
+      userData = new java.util.HashMap[AnyRef, AnyRef]()
+    }
+    userData
+  }
+
+  override def calculateSizeOf(): Long = Sizable.sizeOf(this) + Sizable.deepSizeOf(id, values, userData)
 }
 
 object ScalaSimpleFeature {
@@ -46,28 +65,59 @@ object ScalaSimpleFeature {
 
   import scala.collection.JavaConverters._
 
+  /**
+    * Copy the feature. This is a shallow copy, in that the attributes and user data values will be shared
+    * between the two features
+    *
+    * @param in feature to copy
+    * @return
+    */
   def copy(in: SimpleFeature): ScalaSimpleFeature = copy(in.getFeatureType, in)
 
+  /**
+    * Copy the feature, with a new feature type. Attributes are copied by index and not converted, so the new
+    * feature type must have a compatible schema.
+    *
+    * This is a shallow copy, in that the attributes and user data values will be shared between the two features
+    *
+    * @param sft new simple feature type
+    * @param in feature to copy
+    * @return
+    */
   def copy(sft: SimpleFeatureType, in: SimpleFeature): ScalaSimpleFeature =
     new ScalaSimpleFeature(sft, in.getID, in.getAttributes.toArray, new java.util.HashMap[AnyRef, AnyRef](in.getUserData))
 
+  /**
+    * Copy the feature with a new feature type. Attributes will be copied by name, and converted
+    * as necessary. As compared to `copy`, the new feature type does not have to have a compatible schema.
+    *
+    * If the feature already has the desired feature type, it will be returned as-is and not copied.
+    *
+    * This is a shallow copy, in that the attributes and user data values will be shared between the two features
+    *
+    * @param sft new feature type
+    * @param in feature to copy
+    * @return
+    */
   def retype(sft: SimpleFeatureType, in: SimpleFeature): SimpleFeature = {
     if (sft == in.getFeatureType) { in } else {
       val out = new ScalaSimpleFeature(sft, in.getID)
       sft.getAttributeDescriptors.asScala.foreachIndex { case (d, i) =>
-        out.setAttributeNoConvert(i, in.getAttribute(d.getLocalName))
+        out.setAttribute(i, in.getAttribute(d.getLocalName))
       }
       out.getUserData.putAll(in.getUserData)
       out
     }
   }
 
-  @deprecated("use copy")
-  def create(sft: SimpleFeatureType, in: SimpleFeature): ScalaSimpleFeature = copy(sft, in)
-
   /**
-   * Creates a simple feature, converting the values to the appropriate type
-   */
+    * Creates a simple feature, converting the values to the appropriate type
+    *
+    * @param sft simple feature type
+    * @param id feature id
+    * @param values attributes values, corresponding to the feature type. types will be converted as necessary
+    * @return
+    */
   def create(sft: SimpleFeatureType, id: String, values: Any*): ScalaSimpleFeature = {
     val sf = new ScalaSimpleFeature(sft, id)
     var i = 0
@@ -89,85 +139,180 @@ object ScalaSimpleFeature {
     * Immutable simple feature implementation
     *
     * @param sft simple feature type
-    * @param id simple feature id
     * @param values attribute values, must already be converted into the appropriate types
-    * @param userData user data (not null)
     */
-  class ImmutableSimpleFeature(sft: SimpleFeatureType,
-                               id: String,
-                               values: Array[AnyRef],
-                               userData: java.util.Map[AnyRef, AnyRef] = Collections.emptyMap())
-      extends AbstractImmutableSimpleFeature(sft, id) {
+  class ImmutableSimpleFeature private (sft: SimpleFeatureType, values: Array[AnyRef])
+      extends AbstractImmutableSimpleFeature(sft) with Sizable {
 
-    override lazy val getUserData: java.util.Map[AnyRef, AnyRef] = Collections.unmodifiableMap(userData)
+    private var userData: java.util.Map[AnyRef, AnyRef] = _
+
+    /**
+     *
+     * Alternate constructor
+     *
+     * @param sft simple feature type
+     * @param id simple feature id
+     * @param values attribute values, must already be converted into the appropriate types
+     * @param userData user data (not null)
+     */
+    def this(
+        sft: SimpleFeatureType,
+        id: String,
+        values: Array[AnyRef],
+        userData: java.util.Map[AnyRef, AnyRef] = Collections.emptyMap()) = {
+      this(sft, values)
+      this.id = id
+      this.userData = Collections.unmodifiableMap(userData)
+    }
 
     override def getAttribute(index: Int): AnyRef = values(index)
+    override def getUserData: util.Map[AnyRef, AnyRef] = userData
+
+    override def calculateSizeOf(): Long = Sizable.sizeOf(this) + Sizable.deepSizeOf(id, values, userData)
   }
 
   /**
     * Lazily evaluated, immutable simple feature implementation
     *
     * @param sft simple feature type
-    * @param id simple feature id
-    * @param readAttribute lazily read an attribute value, must already be converted into the appropriate types
-    * @param readUserData lazily read the user data
     */
-  class LazyImmutableSimpleFeature(sft: SimpleFeatureType,
-                                   id: String,
-                                   readAttribute: (Int) => AnyRef,
-                                   readUserData: => java.util.Map[AnyRef, AnyRef])
-      extends AbstractImmutableSimpleFeature(sft, id) {
+  class LazyImmutableSimpleFeature private (sft: SimpleFeatureType)
+      extends AbstractImmutableSimpleFeature(sft) with LazySimpleFeature with Sizable {
 
-    private val bits = AtomicBitSet(sft.getAttributeCount)
-    private val attributes = Array.ofDim[AnyRef](sft.getAttributeCount)
-
-    override lazy val getUserData: java.util.Map[AnyRef, AnyRef] =
-      Collections.unmodifiableMap(synchronized { readUserData })
-
-    override def getAttribute(index: Int): AnyRef = {
-      if (bits.add(index)) {
-        attributes(index) = synchronized { readAttribute(index) }
-      }
-      attributes(index)
+    /**
+     * Constructor
+     *
+     * @param sft simple feature type
+     * @param id simple feature id
+     * @param reader lazily read attributes, must be thread-safe and already of the appropriate types
+     * @param userDataReader lazily read user data, must be thread-safe
+     *
+     */
+    def this(sft: SimpleFeatureType, id: String, reader: LazyAttributeReader, userDataReader: LazyUserDataReader) = {
+      this(sft)
+      this.id = id
+      this.reader = reader
+      this.userDataReader = new ImmutableLazyUserDataReader(userDataReader)
     }
+
+    override def calculateSizeOf(): Long =
+      Sizable.sizeOf(this) + Sizable.deepSizeOf(id, bits, attributes, userData, count, reader, userDataReader)
   }
 
   /**
     * Lazily evaluated, mutable simple feature implementation
     *
     * @param sft simple feature type
-    * @param initialId simple feature id
-    * @param readAttribute lazily read an attribute value, must already be converted into the appropriate types
-    * @param readUserData lazily read the user data
     */
-  class LazyMutableSimpleFeature(sft: SimpleFeatureType,
-                                 initialId: String,
-                                 readAttribute: (Int) => AnyRef,
-                                 readUserData: => java.util.Map[AnyRef, AnyRef])
-      extends AbstractMutableSimpleFeature(sft, initialId, null) {
+  class LazyMutableSimpleFeature private (sft: SimpleFeatureType)
+      extends AbstractMutableSimpleFeature(sft) with LazySimpleFeature with Sizable {
 
-    private val bits = AtomicBitSet(sft.getAttributeCount)
-    private val attributes = Array.ofDim[AnyRef](sft.getAttributeCount)
-    private val userDataRead = new AtomicBoolean(false)
+    /**
+     * Constructor
+     *
+     * @param sft simple feature type
+     * @param id simple feature id
+     * @param reader lazily read attributes, must be thread-safe and already of the appropriate types
+     * @param userDataReader lazily read user data, must be thread-safe
+     *
+     */
+    def this(sft: SimpleFeatureType, id: String, reader: LazyAttributeReader, userDataReader: LazyUserDataReader) = {
+      this(sft)
+      this.id = id
+      this.reader = reader
+      this.userDataReader = userDataReader
+    }
 
     override def setAttributeNoConvert(index: Int, value: AnyRef): Unit = {
-      bits.add(index)
+      if (reader != null) {
+        val word = bits.word(index)
+        word.synchronized {
+          if (word.add(index)) {
+            bits.synchronized {
+              if (attributes == null) {
+                attributes = Array.ofDim[AnyRef](sft.getAttributeCount)
+              }
+            }
+            if (count.decrementAndGet() == 0) {
+              // once all attributes have been read, dereference any backing resources so that they can be gc'd
+              reader = null
+              count = null
+            }
+          }
+        }
+      }
       attributes(index) = value
     }
 
+    override def calculateSizeOf(): Long =
+      Sizable.sizeOf(this) + Sizable.deepSizeOf(id, bits, attributes, userData, count, reader, userDataReader)
+  }
+
+  /**
+   * Thread-safe lazy evaluation of attributes
+   */
+  trait LazySimpleFeature extends AbstractSimpleFeature {
+
+    // we synchronize on the low-level words, in order to minimize contention
+    protected val bits: WordBitSet = WordBitSet(getFeatureType.getAttributeCount + 1)
+    protected var attributes: Array[AnyRef] = _
+    protected var userData: java.util.Map[AnyRef, AnyRef] = _
+
+    protected var count = new AtomicInteger(getFeatureType.getAttributeCount)
+    protected var reader: LazyAttributeReader = _
+    protected var userDataReader: LazyUserDataReader = _
+
     override def getAttribute(index: Int): AnyRef = {
-      if (bits.add(index)) {
-        attributes(index) = synchronized { readAttribute(index) }
+      if (reader != null) {
+        val word = bits.word(index)
+        word.synchronized {
+          if (word.add(index)) {
+            bits.synchronized {
+              if (attributes == null) {
+                attributes = Array.ofDim[AnyRef](getFeatureType.getAttributeCount)
+              }
+            }
+            attributes(index) = reader.read(index)
+            if (count.decrementAndGet() == 0) {
+              // once all attributes have been read, dereference any backing resources so that they can be gc'd
+              reader = null
+              count = null
+            }
+          }
+        }
       }
       attributes(index)
     }
 
     override def getUserData: java.util.Map[AnyRef, AnyRef] = {
-      val res = super.getUserData
-      if (userDataRead.compareAndSet(false, true)) {
-        res.putAll(synchronized { readUserData })
+      if (userDataReader != null) {
+        synchronized {
+          if (userData == null) {
+            userData = userDataReader.read()
+            userDataReader == null // dereference any backing resources
+          }
+        }
       }
-      res
+      userData
     }
+  }
+
+  /**
+    * Lazy attribute reader
+    */
+  trait LazyAttributeReader extends Sizable {
+    def read(i: Int): AnyRef
+  }
+
+  /**
+    * Lazy user data reader
+    */
+  trait LazyUserDataReader extends Sizable {
+    def read(): java.util.Map[AnyRef, AnyRef]
+  }
+
+  class ImmutableLazyUserDataReader(delegate: LazyUserDataReader) extends LazyUserDataReader {
+    override def read(): java.util.Map[AnyRef, AnyRef] = Collections.unmodifiableMap(delegate.read())
+    override def calculateSizeOf(): Long = delegate.calculateSizeOf()
   }
 }

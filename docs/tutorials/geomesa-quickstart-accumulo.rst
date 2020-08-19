@@ -27,7 +27,7 @@ Before you begin, you must have the following:
 -  `Java <http://java.oracle.com/>`__ JDK 1.8
 -  Apache `Maven <http://maven.apache.org/>`__ |maven_version|
 -  a GitHub client
--  an Accumulo |accumulo_version| instance
+-  an Accumulo |accumulo_required_version| instance
 -  an Accumulo user that has both create-table and write permissions
 -  the GeoMesa distributed runtime installed for your instance (see below)
 
@@ -216,13 +216,13 @@ Visualize Data With Leaflet
 .. warning::
 
     To successfully run this command you must have a computer that is connected to the internet
-    in order to access external leaflet resources.
+    in order to access external Leaflet resources.
 
 
 The ``export`` command is a part of the GeoMesa Accumulo command-line tools. In order to use the
 command, ensure you have the command-line tools installed as described in
 :ref:`setting_up_accumulo_commandline`. The ``export`` command provides the ``leaflet`` format which
-will export the features to a leaflet map that you can open in your web browser. To produce the map,
+will export the features to a Leaflet map that you can open in your web browser. To produce the map,
 run the following command from the GeoMesa Accumulo tools distribution
 directory:
 

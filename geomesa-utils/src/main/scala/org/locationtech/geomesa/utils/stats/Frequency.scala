@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -11,7 +11,7 @@ package org.locationtech.geomesa.utils.stats
 import java.util.{Date, Locale}
 
 import com.clearspring.analytics.stream.frequency.IFrequency
-import com.vividsolutions.jts.geom.Geometry
+import org.locationtech.jts.geom.Geometry
 import org.locationtech.geomesa.curve.TimePeriod.TimePeriod
 import org.locationtech.geomesa.curve.{BinnedTime, Z2SFC}
 import org.locationtech.geomesa.utils.clearspring.CountMinSketch
@@ -39,23 +39,21 @@ import scala.reflect.ClassTag
   * @param ct class tag
   * @tparam T type parameter, should match the type binding of the attribute
   */
-class Frequency[T] private [stats] (val sft: SimpleFeatureType,
-                                    val property: String,
-                                    val dtg: Option[String],
-                                    val period: TimePeriod,
-                                    val precision: Int,
-                                    val eps: Double = 0.005,
-                                    val confidence: Double = 0.95)
-                                   (implicit ct: ClassTag[T]) extends Stat {
+class Frequency[T](
+    val sft: SimpleFeatureType,
+    val property: String,
+    val dtg: Option[String],
+    val period: TimePeriod,
+    val precision: Int,
+    val eps: Double = 0.005,
+    val confidence: Double = 0.95
+  )(
+    implicit val ct: ClassTag[T]
+  ) extends Stat {
 
   import org.locationtech.geomesa.utils.conversions.ScalaImplicits.RichTraversableOnce
 
   override type S = Frequency[T]
-
-  @deprecated("property")
-  lazy val attribute: Int = i
-  @deprecated("dtg")
-  lazy val dtgIndex: Int = d
 
   private val i = sft.indexOf(property)
   private val d = dtg.map(sft.indexOf).getOrElse(-1)
@@ -99,7 +97,6 @@ class Frequency[T] private [stats] (val sft: SimpleFeatureType,
     * @return count of the value
     */
   def countDirect(value: String): Long = sketchMap.values.map(_.estimateCount(value)).sumOrElse(0L)
-
 
   /**
     * Gets the count for a given value, which has already been converted into a string. Useful
@@ -293,7 +290,7 @@ object Frequency {
   private [stats] def geomToKey(value: Geometry, mask: Long): Long = {
     import org.locationtech.geomesa.utils.geotools.Conversions.RichGeometry
     val centroid = value.safeCentroid()
-    Z2SFC.index(centroid.getX, centroid.getY).z & mask
+    Z2SFC.index(centroid.getX, centroid.getY) & mask
   }
 
   private [stats] def stringToKey(value: String, precision: Int): String = {

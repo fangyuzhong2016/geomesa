@@ -1,6 +1,10 @@
 Kudu Data Store
 ===============
 
+.. note::
+
+    GeoMesa currently supports Kudu version |kudu_version|.
+
 The GeoMesa Kudu Data Store is an implementation of the GeoTools ``DataStore`` interface that is backed
 by `Apache Kudu <http://kudu.apache.org/>`__. It is found in the ``geomesa-kudu`` directory of the GeoMesa
 source distribution.
@@ -24,10 +28,10 @@ To get started with the Kudu Data Store, try the :doc:`/tutorials/geomesa-quicks
     :maxdepth: 1
 
     install
-    configuration
-    index_config
     usage
     geoserver
     commandline
     spark
+    configuration
+    index_config
     visibilities

@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -8,8 +8,11 @@
 
 package org.locationtech.geomesa.features.serialization
 
-import com.vividsolutions.jts.geom._
+import com.typesafe.scalalogging.LazyLogging
 import org.locationtech.geomesa.utils.geometry.GeometryPrecision.TwkbPrecision
+import org.locationtech.jts.geom._
+
+import scala.util.control.NonFatal
 
 /**
   * Based on the TWKB standard: https://github.com/TWKB/Specification/blob/master/twkb.md
@@ -18,7 +21,7 @@ import org.locationtech.geomesa.utils.geometry.GeometryPrecision.TwkbPrecision
   */
 // noinspection LanguageFeature
 trait TwkbSerialization[T <: NumericWriter, V <: NumericReader]
-    extends VarIntEncoding[T, V] with WkbSerialization[T, V] {
+    extends VarIntEncoding[T, V] with WkbSerialization[T, V] with LazyLogging {
 
   import DimensionalBounds._
   import TwkbSerialization.FlagBytes._
@@ -46,12 +49,23 @@ trait TwkbSerialization[T <: NumericWriter, V <: NumericReader]
         // note that we only check the first coordinate - if a geometry is written with different
         // dimensions in each coordinate, some information may be lost
         val coord = geometry.getCoordinate
-        // check for dimensions - use NaN != NaN to verify z coordinate
-        // TODO check for M coordinate when added to JTS
-        if (coord == null || coord.z != coord.z) {
+        if (coord == null) {
           new XYState(precision.xy)
         } else {
-          new XYZState(precision.xy, precision.z)
+          // check for dimensions - use NaN != NaN to verify presence of coordinates
+          val hasZ = !java.lang.Double.isNaN(coord.getZ)
+          val hasM = !java.lang.Double.isNaN(coord.getM)
+          if (hasZ) {
+            if (hasM) {
+              new XYZMState(precision.xy, precision.z, precision.m)
+            } else {
+              new XYZState(precision.xy, precision.z)
+            }
+          } else if (hasM) {
+            new XYMState(precision.xy, precision.m)
+          } else {
+            new XYState(precision.xy)
+          }
         }
       }
 
@@ -128,75 +142,79 @@ trait TwkbSerialization[T <: NumericWriter, V <: NumericReader]
     * @return
     */
   def deserialize(in: V): Geometry = {
-    val precisionAndType = in.readByte()
-    if (precisionAndType == ZeroByte) {
-      null
-    } else if (precisionAndType == NOT_NULL_BYTE) {
-      // TODO this overlaps with twkb point type with precision 0
-      deserializeWkb(in)
-    } else {
-      // first byte contains the geometry type in the first 4 bits and the x-y precision in the second 4 bits
-      val geomType = (precisionAndType & 0x0F).toByte
-      val precision = VarIntEncoding.zigzagDecode((precisionAndType & 0xF0) >>> 4)
+    try {
+      val precisionAndType = in.readByte()
+      if (precisionAndType == ZeroByte) {
+        null
+      } else if (precisionAndType == NOT_NULL_BYTE) {
+        // TODO this overlaps with twkb point type with precision 0
+        deserializeWkb(in)
+      } else {
+        // first byte contains the geometry type in the first 4 bits and the x-y precision in the second 4 bits
+        val geomType = (precisionAndType & 0x0F).toByte
+        val precision = VarIntEncoding.zigzagDecode((precisionAndType & 0xF0) >>> 4)
 
-      // second byte contains flags for optional elements
-      val flags = in.readByte()
-      val hasBoundingBox = (flags & BoundingBoxFlag) != 0
-      val hasExtendedDims = (flags & ExtendedDimsFlag) != 0
-      val isEmpty = (flags & EmptyFlag) != 0
+        // second byte contains flags for optional elements
+        val flags = in.readByte()
+        val hasBoundingBox = (flags & BoundingBoxFlag) != 0
+        val hasExtendedDims = (flags & ExtendedDimsFlag) != 0
+        val isEmpty = (flags & EmptyFlag) != 0
 
-      // extended dims indicates the presence of z and/or m
-      // we create our state tracker based on the dimensions that are present
-      implicit val state: DeltaState = if (hasExtendedDims) {
-        // z and m precisions are indicated in the next byte, where (from right to left):
-        //   bit 0 indicates presence of z dimension
-        //   bit 1 indicates presence of m dimension
-        //   bits 2-5 indicate z precision
-        //   bits 6-8 indicate m precision
-        val extendedDims = in.readByte()
-        if ((extendedDims & 0x01) != 0) { // indicates z dimension
-          if ((extendedDims & 0x02) != 0) { // indicates m dimension
-            new XYZMState(precision, (extendedDims & 0x1C) >> 2, (extendedDims & 0xE0) >>> 5)
+        // extended dims indicates the presence of z and/or m
+        // we create our state tracker based on the dimensions that are present
+        implicit val state: DeltaState = if (hasExtendedDims) {
+          // z and m precisions are indicated in the next byte, where (from right to left):
+          //   bit 0 indicates presence of z dimension
+          //   bit 1 indicates presence of m dimension
+          //   bits 2-5 indicate z precision
+          //   bits 6-8 indicate m precision
+          val extendedDims = in.readByte()
+          if ((extendedDims & 0x01) != 0) { // indicates z dimension
+            if ((extendedDims & 0x02) != 0) { // indicates m dimension
+              new XYZMState(precision, (extendedDims & 0x1C) >> 2, (extendedDims & 0xE0) >>> 5)
+            } else {
+              new XYZState(precision, (extendedDims & 0x1C) >> 2)
+            }
+          } else if ((extendedDims & 0x02) != 0) {  // indicates m dimension
+            new XYMState(precision, (extendedDims & 0xE0) >>> 5)
           } else {
-            new XYZState(precision, (extendedDims & 0x1C) >> 2)
+            // not sure why anyone would indicate extended dims but set them all false...
+            new XYState(precision)
           }
-        } else if ((extendedDims & 0x02) != 0) {  // indicates m dimension
-          new XYMState(precision, (extendedDims & 0xE0) >>> 5)
         } else {
-          // not sure why anyone would indicate extended dims but set them all false...
           new XYState(precision)
         }
-      } else {
-        new XYState(precision)
+
+        // size is the length of the remainder of the geometry, after the size attribute
+        // we don't currently use size - parsing will fail if size is actually present
+
+        // val hasSize = (flags & FlagBytes.SizeFlag) != 0
+        // if (hasSize) {
+        //   val size = readUnsignedVarInt(in)
+        // }
+
+        // bounding box is not currently used, but we write it in anticipation of future filter optimizations
+        if (hasBoundingBox) {
+          state.skipBoundingBox(in)
+        }
+
+        // children geometries can be written with an id list
+        // we don't currently use ids - parsing will fail if ids are actually present
+        // val hasIds = (flags & FlagBytes.IdsFlag) != 0
+
+        geomType match {
+          case TwkbPoint => factory.createPoint(if (isEmpty) { null } else { csFactory.create(readPointArray(in, 1)) })
+          case TwkbLineString      => readLineString(in)
+          case TwkbPolygon         => readPolygon(in)
+          case TwkbMultiPoint      => readMultiPoint(in)
+          case TwkbMultiLineString => readMultiLineString(in)
+          case TwkbMultiPolygon    => readMultiPolygon(in)
+          case TwkbCollection      => readCollection(in)
+          case _ => throw new IllegalArgumentException(s"Invalid TWKB geometry type $geomType")
+        }
       }
-
-      // size is the length of the remainder of the geometry, after the size attribute
-      // we don't currently use size - parsing will fail if size is actually present
-
-      // val hasSize = (flags & FlagBytes.SizeFlag) != 0
-      // if (hasSize) {
-      //   val size = readUnsignedVarInt(in)
-      // }
-
-      // bounding box is not currently used, but we write it in anticipation of future filter optimizations
-      if (hasBoundingBox) {
-        state.skipBoundingBox(in)
-      }
-
-      // children geometries can be written with an id list
-      // we don't currently use ids - parsing will fail if ids are actually present
-      // val hasIds = (flags & FlagBytes.IdsFlag) != 0
-
-      geomType match {
-        case TwkbPoint => factory.createPoint(if (isEmpty) { null } else { csFactory.create(readPointArray(in, 1)) })
-        case TwkbLineString      => readLineString(in)
-        case TwkbPolygon         => readPolygon(in)
-        case TwkbMultiPoint      => readMultiPoint(in)
-        case TwkbMultiLineString => readMultiLineString(in)
-        case TwkbMultiPolygon    => readMultiPolygon(in)
-        case TwkbCollection      => readCollection(in)
-        case _ => throw new IllegalArgumentException(s"Invalid TWKB geometry type $geomType")
-      }
+    } catch {
+      case NonFatal(e) => logger.error(s"Error reading serialized kryo geometry:", e); null
     }
   }
 
@@ -369,6 +387,9 @@ trait TwkbSerialization[T <: NumericWriter, V <: NumericReader]
     */
   private sealed trait DeltaState {
 
+    protected def readCoordinateState(in: V): Unit
+    protected def createCoordinate(): Coordinate
+
     /**
       * Write metadata, which includes the geometry and precision byte, the flag byte, and optionally
       * an extended precision byte
@@ -411,7 +432,10 @@ trait TwkbSerialization[T <: NumericWriter, V <: NumericReader]
       * @param in input
       * @return
       */
-    def readCoordinate(in: V): Coordinate
+    def readCoordinate(in: V): Coordinate = {
+      readCoordinateState(in)
+      createCoordinate()
+    }
 
     /**
       * Reset the state back to its original state, suitable for re-use
@@ -421,13 +445,20 @@ trait TwkbSerialization[T <: NumericWriter, V <: NumericReader]
 
   private class XYState(precision: Int) extends DeltaState {
 
-    private val p: Double = math.pow(10, precision)
-    private var x: Int = 0
-    private var y: Int = 0
+    protected val p: Double = math.pow(10, precision)
+    protected var x: Int = 0
+    protected var y: Int = 0
 
     protected val boundingBoxFlag: Byte = BoundingBoxFlag
     protected val emptyFlag: Byte = EmptyFlag
     protected val dimensionsFlag: Byte = ZeroByte
+
+    override protected def readCoordinateState(in: V): Unit = {
+      x = x + readVarInt(in)
+      y = y + readVarInt(in)
+    }
+
+    override protected def createCoordinate(): Coordinate = new CoordinateXY(x / p, y / p)
 
     override def writeMetadata(out: T, geometryType: Byte, empty: Boolean, bbox: Boolean): Unit = {
       // write the geometry type and the main precision
@@ -443,12 +474,6 @@ trait TwkbSerialization[T <: NumericWriter, V <: NumericReader]
       writeVarInt(out, cy - y)
       x = cx
       y = cy
-    }
-
-    override def readCoordinate(in: V): Coordinate = {
-      x = x + readVarInt(in)
-      y = y + readVarInt(in)
-      new Coordinate(x / p, y / p)
     }
 
     override def writeBoundingBox[G <: Geometry](out: T, geometry: G)(implicit bounds: DimensionalBounds[G]): Unit = {
@@ -492,11 +517,18 @@ trait TwkbSerialization[T <: NumericWriter, V <: NumericReader]
 
   private class XYZState(precision: Int, zPrecision: Int) extends ExtendedState(precision) {
 
-    private val pz: Double = math.pow(10, zPrecision)
-    private var z: Int = 0
+    protected val pz: Double = math.pow(10, zPrecision)
+    protected var z: Int = 0
 
     // sets bits for z dim, and its precisions
     override protected val extendedDims: Byte = (0x01 | ((zPrecision & 0x03) << 2)).toByte
+
+    override protected def readCoordinateState(in: V): Unit = {
+      super.readCoordinateState(in)
+      z = z + readVarInt(in)
+    }
+
+    override protected def createCoordinate(): Coordinate = new Coordinate(x / p, y / p, z / pz)
 
     override def writeBoundingBox[G <: Geometry](out: T, geometry: G)(implicit bounds: DimensionalBounds[G]): Unit = {
       super.writeBoundingBox(out, geometry)
@@ -508,16 +540,9 @@ trait TwkbSerialization[T <: NumericWriter, V <: NumericReader]
 
     override def writeCoordinate(out: T, coordinate: Coordinate): Unit = {
       super.writeCoordinate(out, coordinate)
-      val cz = math.round(coordinate.z * pz).toInt
+      val cz = math.round(coordinate.getZ * pz).toInt
       writeVarInt(out, cz - z)
       z = cz
-    }
-
-    override def readCoordinate(in: V): Coordinate = {
-      val coord = super.readCoordinate(in)
-      z = z + readVarInt(in)
-      coord.z = z / pz
-      coord
     }
 
     override def skipBoundingBox(in: V): Unit = {
@@ -534,11 +559,18 @@ trait TwkbSerialization[T <: NumericWriter, V <: NumericReader]
 
   private class XYMState(precision: Int, mPrecision: Int) extends ExtendedState(precision) {
 
-    private val pm: Double = math.pow(10, mPrecision)
-    private var m: Int = 0
+    protected val pm: Double = math.pow(10, mPrecision)
+    protected var m: Int = 0
 
     // sets bit for m dim, and its precisions
     override protected val extendedDims: Byte = (0x02 | ((mPrecision & 0x03) << 5)).toByte
+
+    override protected def readCoordinateState(in: V): Unit = {
+      super.readCoordinateState(in)
+      m = m + readVarInt(in)
+    }
+
+    override protected def createCoordinate(): Coordinate = new CoordinateXYM(x / p, y / p, m / pm)
 
     override def writeBoundingBox[G <: Geometry](out: T, geometry: G)(implicit bounds: DimensionalBounds[G]): Unit = {
       super.writeBoundingBox(out, geometry)
@@ -550,16 +582,9 @@ trait TwkbSerialization[T <: NumericWriter, V <: NumericReader]
 
     override def writeCoordinate(out: T, coordinate: Coordinate): Unit = {
       super.writeCoordinate(out, coordinate)
-      val cm = 0 // TODO math.round(coordinate.m * pm).toInt
+      val cm = math.round(coordinate.getM * pm).toInt
       writeVarInt(out, cm - m)
       m = cm
-    }
-
-    override def readCoordinate(in: V): Coordinate = {
-      val coord = super.readCoordinate(in)
-      m = m + readVarInt(in)
-      // TODO set m as 4th ordinate when supported by jts
-      coord
     }
 
     override def skipBoundingBox(in: V): Unit = {
@@ -576,12 +601,19 @@ trait TwkbSerialization[T <: NumericWriter, V <: NumericReader]
 
   private class XYZMState(precision: Int, zPrecision: Int, mPrecision: Int) extends XYZState(precision, zPrecision) {
 
-    private val pm: Double = math.pow(10, mPrecision)
-    private var m: Int = 0
+    protected val pm: Double = math.pow(10, mPrecision)
+    protected var m: Int = 0
 
     // sets bits for both z and m dims, and their precisions
     override protected val extendedDims: Byte =
       (0x03 | ((zPrecision & 0x03) << 2) | ((mPrecision & 0x03) << 5)).toByte
+
+    override protected def readCoordinateState(in: V): Unit = {
+      super.readCoordinateState(in)
+      m = m + readVarInt(in)
+    }
+
+    override protected def createCoordinate(): Coordinate = new CoordinateXYZM(x / p, y / p, z / pz, m / pm)
 
     override def writeBoundingBox[G <: Geometry](out: T, geometry: G)(implicit bounds: DimensionalBounds[G]): Unit = {
       super.writeBoundingBox(out, geometry)
@@ -593,16 +625,9 @@ trait TwkbSerialization[T <: NumericWriter, V <: NumericReader]
 
     override def writeCoordinate(out: T, coordinate: Coordinate): Unit = {
       super.writeCoordinate(out, coordinate)
-      val cm = 0 // TODO math.round(coordinate.m * pm).toInt
+      val cm = math.round(coordinate.getM * pm).toInt
       writeVarInt(out, cm - m)
       m = cm
-    }
-
-    override def readCoordinate(in: V): Coordinate = {
-      val coord = super.readCoordinate(in)
-      m = m + readVarInt(in)
-      // TODO set m as 4th ordinate when supported by jts
-      coord
     }
 
     override def skipBoundingBox(in: V): Unit = {

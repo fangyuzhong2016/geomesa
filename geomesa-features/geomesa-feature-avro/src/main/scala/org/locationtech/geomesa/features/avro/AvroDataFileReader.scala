@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -17,8 +17,8 @@ import org.opengis.feature.simple.{SimpleFeature, SimpleFeatureType}
 
 class AvroDataFileReader(is: InputStream) extends Iterator[SimpleFeature] with Closeable {
 
-  private val datumReader = new FeatureSpecificReader(null, null, SerializationOptions.withUserData)
-  private val dfs = new DataFileStream[AvroSimpleFeature](is, datumReader)
+  private val datumReader = new FeatureSpecificReader(SerializationOptions.withUserData)
+  private val dfs = new DataFileStream[SimpleFeature](is, datumReader)
 
   if (!AvroDataFile.canParse(dfs)) {
     CloseWithLogging(dfs)
@@ -26,9 +26,7 @@ class AvroDataFileReader(is: InputStream) extends Iterator[SimpleFeature] with C
   }
 
   private val sft = AvroDataFile.getSft(dfs)
-  private val schema = dfs.getSchema
 
-  datumReader.setSchema(schema)
   datumReader.setTypes(sft, sft)
 
   def getSft: SimpleFeatureType = sft

@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -15,11 +15,9 @@ import org.opengis.feature.simple.{SimpleFeature, SimpleFeatureType}
   *
   * @param sft simple feature type
   */
-class CountStat private [stats] (val sft: SimpleFeatureType) extends Stat {
+class CountStat(val sft: SimpleFeatureType, private [stats] var counter: Long = 0L) extends Stat {
 
   override type S = CountStat
-
-  private [stats] var counter: Long = 0L
 
   def count: Long = counter
 

@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -15,10 +15,10 @@ import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.{Callable, Executors, Future, TimeUnit}
 
 import org.locationtech.geomesa.accumulo.data.AccumuloDataStore
-import org.locationtech.geomesa.accumulo.util.ZookeeperLocking
-import org.locationtech.geomesa.index.api.GeoMesaFeatureIndex
 import org.locationtech.geomesa.index.metadata.GeoMesaMetadata
 import org.locationtech.geomesa.utils.geotools._
+import org.locationtech.geomesa.utils.text.StringSerialization
+import org.locationtech.geomesa.utils.zk.ZookeeperLocking
 import org.opengis.feature.simple.SimpleFeatureType
 
 /**
@@ -105,7 +105,7 @@ class StatsRunner(ds: AccumuloDataStore) extends Runnable with Closeable {
 class StatRunner(ds: AccumuloDataStore, sft: SimpleFeatureType, lockTimeout: Option[Long] = None)
     extends Callable[Instant] with ZookeeperLocking {
 
-  override val connector = ds.connector
+  override protected def zookeepers: String = ds.connector.getInstance.getZooKeepers
 
   /**
     * Runs stats for the simple feature type
@@ -135,7 +135,7 @@ class StatRunner(ds: AccumuloDataStore, sft: SimpleFeatureType, lockTimeout: Opt
               nextUpdate
             } else {
               // run the update - this updates the last update time too
-              ds.stats.generateStats(sft)
+              ds.stats.writer.analyze(sft)
               Instant.now(Clock.systemUTC()).plus(updateInterval, ChronoUnit.MINUTES)
             }
           } finally {
@@ -151,7 +151,7 @@ class StatRunner(ds: AccumuloDataStore, sft: SimpleFeatureType, lockTimeout: Opt
     * @return last update
     */
   private def getLastUpdate: Instant = {
-    ds.metadata.read(sft.getTypeName, GeoMesaMetadata.STATS_GENERATION_KEY, cache = false) match {
+    ds.metadata.read(sft.getTypeName, GeoMesaMetadata.StatsGenerationKey, cache = false) match {
       case Some(dt) => Instant.from(GeoToolsDateFormat.parse(dt))
       case None     => Instant.ofEpochSecond(0)
     }
@@ -164,11 +164,11 @@ class StatRunner(ds: AccumuloDataStore, sft: SimpleFeatureType, lockTimeout: Opt
     */
   private def getUpdateInterval: Long =
     // note: default is 1440 minutes (one day)
-    ds.metadata.read(sft.getTypeName, GeoMesaMetadata.STATS_INTERVAL_KEY).map(_.toLong).getOrElse(1440)
+    ds.metadata.read(sft.getTypeName, GeoMesaMetadata.StatsIntervalKey).map(_.toLong).getOrElse(1440)
 
   private def lockKey: String = {
-    val ca = GeoMesaFeatureIndex.hexEncodeNonAlphaNumeric(ds.config.catalog)
-    val tn = GeoMesaFeatureIndex.hexEncodeNonAlphaNumeric(sft.getTypeName)
+    val ca = StringSerialization.alphaNumericSafeString(ds.config.catalog)
+    val tn = StringSerialization.alphaNumericSafeString(sft.getTypeName)
     s"/org.locationtech.geomesa/accumulo/stats/$ca/$tn"
   }
 }

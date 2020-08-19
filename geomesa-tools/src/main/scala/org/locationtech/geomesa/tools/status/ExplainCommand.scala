@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -10,7 +10,7 @@ package org.locationtech.geomesa.tools.status
 
 import com.beust.jcommander.Parameters
 import org.geotools.data.Query
-import org.geotools.factory.Hints
+import org.geotools.util.factory.Hints
 import org.locationtech.geomesa.index.conf.QueryHints
 import org.locationtech.geomesa.index.geoserver.ViewParams
 import org.locationtech.geomesa.index.geotools.GeoMesaDataStore
@@ -18,7 +18,7 @@ import org.locationtech.geomesa.index.utils.ExplainString
 import org.locationtech.geomesa.tools._
 import org.opengis.filter.Filter
 
-trait ExplainCommand[DS <: GeoMesaDataStore[DS, _, _]] extends DataStoreCommand[DS] {
+trait ExplainCommand[DS <: GeoMesaDataStore[DS]] extends DataStoreCommand[DS] {
 
   override def params: ExplainParams
 

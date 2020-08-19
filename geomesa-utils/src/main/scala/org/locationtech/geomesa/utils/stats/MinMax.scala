@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -11,7 +11,7 @@ package org.locationtech.geomesa.utils.stats
 import java.util.Date
 
 import com.typesafe.scalalogging.LazyLogging
-import com.vividsolutions.jts.geom.{Coordinate, Geometry}
+import org.locationtech.jts.geom.{Coordinate, Geometry}
 import org.geotools.geometry.jts.JTSFactoryFinder
 import org.locationtech.geomesa.utils.clearspring.HyperLogLog
 import org.locationtech.geomesa.utils.stats.MinMax.CardinalityBits
@@ -40,9 +40,6 @@ class MinMax[T] private [stats] (val sft: SimpleFeatureType,
     this(sft, attribute, defaults.max, defaults.min, HyperLogLog(CardinalityBits))(defaults)
 
   override type S = MinMax[T]
-
-  @deprecated("property")
-  lazy val attribute: Int = i
 
   private val i = sft.indexOf(property)
 

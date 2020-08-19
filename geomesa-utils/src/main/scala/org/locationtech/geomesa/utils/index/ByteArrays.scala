@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -21,11 +21,15 @@ object ByteArrays {
   val OneByte: Byte  = 0x01.toByte
   val MaxByte: Byte =  0xff.toByte
 
-  val ZeroByteArray = Array(ByteArrays.ZeroByte)
-  val OneByteArray = Array(ByteArrays.OneByte)
+  val ZeroByteArray: Array[Byte] = Array(ByteArrays.ZeroByte)
+  val OneByteArray : Array[Byte] = Array(ByteArrays.OneByte)
 
   implicit val ByteOrdering: Ordering[Array[Byte]] =
     Ordering.comparatorToOrdering(UnsignedBytes.lexicographicalComparator)
+
+  implicit val UnsignedByteOrdering: Ordering[Byte] = new Ordering[Byte] {
+    override def compare(x: Byte, y: Byte): Int = UnsignedBytes.compare(x, y)
+  }
 
   /**
     * Writes the short as 2 bytes in the provided array, starting at offset
@@ -37,6 +41,19 @@ object ByteArrays {
   def writeShort(short: Short, bytes: Array[Byte], offset: Int = 0): Unit = {
     bytes(offset) = (short >> 8).asInstanceOf[Byte]
     bytes(offset + 1) = short.asInstanceOf[Byte]
+  }
+
+  /**
+    * Writes the short as 2 bytes in the provided array, starting at offset,
+    * and preserving sort order for negative values
+    *
+    * @param short short to write
+    * @param bytes bytes array to write to, must have length at least `offset` + 2
+    * @param offset offset to start writing
+    */
+  def writeOrderedShort(short: Short, bytes: Array[Byte], offset: Int = 0): Unit = {
+    bytes(offset) = (((short >> 8) & 0xff) ^ 0x80).asInstanceOf[Byte]
+    bytes(offset + 1) = (short & 0xff).asInstanceOf[Byte]
   }
 
   /**
@@ -72,6 +89,25 @@ object ByteArrays {
   }
 
   /**
+    * Writes the long as 8 bytes in the provided array, starting at offset,
+    * and preserving sort order for negative values
+    *
+    * @param long long to write
+    * @param bytes bytes array to write to, must have length at least `offset` + 8
+    * @param offset offset to start writing
+    */
+  def writeOrderedLong(long: Long, bytes: Array[Byte], offset: Int = 0): Unit = {
+    bytes(offset    ) = (((long >> 56) & 0xff) ^ 0x80).asInstanceOf[Byte]
+    bytes(offset + 1) = ((long >> 48) & 0xff).asInstanceOf[Byte]
+    bytes(offset + 2) = ((long >> 40) & 0xff).asInstanceOf[Byte]
+    bytes(offset + 3) = ((long >> 32) & 0xff).asInstanceOf[Byte]
+    bytes(offset + 4) = ((long >> 24) & 0xff).asInstanceOf[Byte]
+    bytes(offset + 5) = ((long >> 16) & 0xff).asInstanceOf[Byte]
+    bytes(offset + 6) = ((long >> 8)  & 0xff).asInstanceOf[Byte]
+    bytes(offset + 7) =  (long        & 0xff).asInstanceOf[Byte]
+  }
+
+  /**
     * Reads 2 bytes from the provided array as a short, starting at offset
     *
     * @param bytes array to read from
@@ -80,6 +116,16 @@ object ByteArrays {
     */
   def readShort(bytes: Array[Byte], offset: Int = 0): Short =
     (((bytes(offset) & 0xff) << 8) | (bytes(offset + 1) & 0xff)).toShort
+
+  /**
+    * Reads 2 bytes from the provided array as a short, starting at offset
+    *
+    * @param bytes array to read from
+    * @param offset offset to start reading
+    * @return
+    */
+  def readOrderedShort(bytes: Array[Byte], offset: Int = 0): Short =
+    ((((bytes(offset) ^ 0x80) & 0xff) << 8) | (bytes(offset + 1) & 0xff)).toShort
 
   /**
     * Reads 4 bytes from the provided array as an int, starting at offset
@@ -113,15 +159,81 @@ object ByteArrays {
      (bytes(offset + 7) & 0xffL)
   }
 
+  /**
+    * Reads 8 bytes from the provided array as a long, starting at offset
+    *
+    * @param bytes array to read from
+    * @param offset offset to start reading
+    * @return
+    */
+  def readOrderedLong(bytes: Array[Byte], offset: Int = 0): Long = {
+    (((bytes(offset) ^ 0x80) & 0xffL) << 56) |
+    ((bytes(offset + 1) & 0xffL) << 48) |
+    ((bytes(offset + 2) & 0xffL) << 40) |
+    ((bytes(offset + 3) & 0xffL) << 32) |
+    ((bytes(offset + 4) & 0xffL) << 24) |
+    ((bytes(offset + 5) & 0xffL) << 16) |
+    ((bytes(offset + 6) & 0xffL) <<  8) |
+     (bytes(offset + 7) & 0xffL)
+  }
+
+  /**
+    * Allocates a new array of length two and writes the short to it
+    *
+    * @param short value to encode
+    * @return
+    */
   def toBytes(short: Short): Array[Byte] = {
     val result = Array.ofDim[Byte](2)
     writeShort(short, result)
     result
   }
 
+  /**
+    * Allocates a new array of length two and writes the short to it, preserving sort order for negative values
+    *
+    * @param short value to encode
+    * @return
+    */
+  def toOrderedBytes(short: Short): Array[Byte] = {
+    val result = Array.ofDim[Byte](2)
+    writeOrderedShort(short, result)
+    result
+  }
+
+  /**
+    * Allocates a new array of length four and writes the int to it
+    *
+    * @param int value to encode
+    * @return
+    */
+  def toBytes(int: Int): Array[Byte] = {
+    val result = Array.ofDim[Byte](4)
+    writeInt(int, result)
+    result
+  }
+
+  /**
+    * Allocates a new array of length eight and writes the long to it
+    *
+    * @param long value to encode
+    * @return
+    */
   def toBytes(long: Long): Array[Byte] = {
     val result = Array.ofDim[Byte](8)
     writeLong(long, result)
+    result
+  }
+
+  /**
+    * Allocates a new array of length eight and writes the long to it, preserving sort order for negative values
+    *
+    * @param long value to encode
+    * @return
+    */
+  def toOrderedBytes(long: Long): Array[Byte] = {
+    val result = Array.ofDim[Byte](8)
+    writeOrderedLong(long, result)
     result
   }
 
@@ -140,6 +252,46 @@ object ByteArrays {
   def toBytes(bin: Short, z: Long): Array[Byte] = {
     val result = Array.ofDim[Byte](10)
     writeShort(bin, result, 0)
+    writeLong(z, result, 2)
+    result
+  }
+
+  /**
+   * Creates a byte array with a short and a long and an int
+   *
+   * @param bin bin
+   * @param s s value
+   * @param time time offset
+   * @return
+   */
+  def toBytes(bin: Short, s: Long, time: Int): Array[Byte] = {
+    val result = Array.ofDim[Byte](14)
+    writeShort(bin, result)
+    writeLong(s, result, 2)
+    writeInt(time, result, 10)
+    result
+  }
+
+  /**
+   * Creates a byte array with a short and a long and an int
+   *
+   * @param bin bin
+   * @param s s value
+   * @param time time offset
+   * @return
+   */
+  def toBytesFollowingPrefix(bin: Short, s: Long, time: Int): Array[Byte] = incrementInPlace(toBytes(bin, s, time))
+
+  /**
+    * Creates a byte array with a short and a long, preserving the sort order of the short for negative values
+    *
+    * @param bin time bin
+    * @param z z value
+    * @return
+    */
+  def toOrderedBytes(bin: Short, z: Long): Array[Byte] = {
+    val result = Array.ofDim[Byte](10)
+    writeOrderedShort(bin, result, 0)
     writeLong(z, result, 2)
     result
   }
@@ -224,10 +376,20 @@ object ByteArrays {
     *   com.google.common.primitives.Shorts#toByteArray(short)
     *   com.google.common.primitives.Longs#toByteArray(long)
     *
+    * @param bin epoch bin
     * @param z z value
     * @return
     */
   def toBytesFollowingPrefix(bin: Short, z: Long): Array[Byte] = incrementInPlace(toBytes(bin, z))
+
+  /**
+    * Creates a byte array that sorts directly after the z-value (as converted into a byte array).
+    *
+    * @param bin epoch bin
+    * @param z z value
+    * @return
+    */
+  def toOrderedBytesFollowingPrefix(bin: Short, z: Long): Array[Byte] = incrementInPlace(toOrderedBytes(bin, z))
 
   def toBytesFollowingRow(long: Long): Array[Byte] = {
     val result = Array.ofDim[Byte](9)
@@ -239,6 +401,14 @@ object ByteArrays {
   def toBytesFollowingRow(bin: Short, z: Long): Array[Byte] = {
     val result = Array.ofDim[Byte](11)
     writeShort(bin, result, 0)
+    writeLong(z, result, 2)
+    result(10) = ZeroByte
+    result
+  }
+
+  def toOrderedBytesFollowingRow(bin: Short, z: Long): Array[Byte] = {
+    val result = Array.ofDim[Byte](11)
+    writeOrderedShort(bin, result, 0)
     writeLong(z, result, 2)
     result(10) = ZeroByte
     result
@@ -345,7 +515,47 @@ object ByteArrays {
     * @param bytes unsigned byte array
     * @return
     */
-  def toHex(bytes: Array[Byte]): String = bytes.map(toHex).mkString
+  def toHex(bytes: Array[Byte]): String = toHex(bytes, 0, bytes.length)
+
+  /**
+    * Converts an unsigned byte array into a hex string
+    *
+    * @param bytes unsigned byte array
+    * @return
+    */
+  def toHex(bytes: Array[Byte], offset: Int, length: Int): String = {
+    val sb = new StringBuilder(length * 2)
+    var i = 0
+    while (i < length) {
+      sb.append(toHex(bytes(i + offset)))
+      i += 1
+    }
+    sb.toString
+  }
+
+
+  /**
+   * Convert a byte to a printable string. Based on Accumulo's byte representation
+   *
+   * @param b byte
+   * @return
+   */
+  def printable(b: Byte): String = {
+    val c = 0xff & b
+    if (c >= 32 && c <= 126) { c.toChar.toString } else { f"%%$c%02x;" }
+  }
+
+  /**
+   * Convert each byte in the array to a printable string
+   *
+   * @param bytes bytes
+   * @return
+   */
+  def printable(bytes: Array[Byte]): String = {
+    if (bytes == null) { "null" } else {
+      bytes.map(printable).mkString("")
+    }
+  }
 
   /**
     * Increment the last byte in the array, if it's not equal to MaxByte. Otherwise,

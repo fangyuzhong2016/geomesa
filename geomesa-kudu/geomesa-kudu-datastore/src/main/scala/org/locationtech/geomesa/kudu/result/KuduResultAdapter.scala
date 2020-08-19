@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -11,8 +11,9 @@ package org.locationtech.geomesa.kudu.result
 import java.nio.ByteBuffer
 
 import org.apache.kudu.client.RowResult
-import org.geotools.factory.Hints
+import org.geotools.util.factory.Hints
 import org.locationtech.geomesa.arrow.ArrowProperties
+import org.locationtech.geomesa.index.iterators.DensityScan
 import org.locationtech.geomesa.utils.collection.CloseableIterator
 import org.locationtech.geomesa.utils.io.ByteBuffers.ExpandingByteBuffer
 import org.opengis.feature.simple.{SimpleFeature, SimpleFeatureType}
@@ -29,6 +30,13 @@ trait KuduResultAdapter {
     * @return
     */
   def columns: Seq[String]
+
+  /**
+    * Result simple feature type
+    *
+    * @return
+    */
+  def result: SimpleFeatureType
 
   /**
     * Convert raw rows into result simple features
@@ -52,6 +60,8 @@ object KuduResultAdapter {
   def apply(sft: SimpleFeatureType, auths: Seq[Array[Byte]], ecql: Option[Filter], hints: Hints): KuduResultAdapter = {
     import org.locationtech.geomesa.index.conf.QueryHints.RichHints
 
+    // TODO GEOMESA-2547 support sampling
+
     if (hints.isBinQuery) {
       val trackId = Option(hints.getBinTrackIdField).filter(_ != "id")
       val geom = hints.getBinGeomField
@@ -71,9 +81,10 @@ object KuduResultAdapter {
         hints.isArrowMultiFile)
       ArrowAdapter(sft, auths, ecql, hints.getTransform, config)
     } else if (hints.isDensityQuery) {
+      val geom = DensityScan.getDensityGeometry(sft, hints)
       val Some(envelope) = hints.getDensityEnvelope
       val Some((width, height)) = hints.getDensityBounds
-      DensityAdapter(sft, auths, ecql, envelope, width, height, hints.getDensityWeight)
+      DensityAdapter(sft, auths, ecql, geom, envelope, width, height, hints.getDensityWeight)
     } else if (hints.isStatsQuery) {
       val encode = hints.isStatsEncode || hints.isSkipReduce
       StatsAdapter(sft, auths, ecql, hints.getTransform, hints.getStatsQuery, encode)
@@ -132,6 +143,7 @@ object KuduResultAdapter {
 
   object EmptyAdapter extends KuduResultAdapter {
     override val columns: Seq[String] = Seq.empty
+    override val result: SimpleFeatureType = null
     override def adapt(results: CloseableIterator[RowResult]): CloseableIterator[SimpleFeature] =
       CloseableIterator.empty
   }

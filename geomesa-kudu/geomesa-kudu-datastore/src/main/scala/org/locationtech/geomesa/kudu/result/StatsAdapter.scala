@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -70,6 +70,8 @@ case class StatsAdapter(sft: SimpleFeatureType,
   override val columns: Seq[String] =
     if (requiresFid) { Seq(FeatureIdAdapter.name, VisibilityAdapter.name) } else { Seq(VisibilityAdapter.name) } ++
         schema.schema(attributes).map(_.getName)
+
+  override def result: SimpleFeatureType = StatsScan.StatsSft
 
   override def adapt(results: CloseableIterator[RowResult]): CloseableIterator[SimpleFeature] = {
     val stat = Stat(statSft, query)

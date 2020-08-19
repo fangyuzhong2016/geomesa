@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -9,8 +9,10 @@
 package org.locationtech.geomesa.bigtable.tools
 
 import com.beust.jcommander.JCommander
+import org.locationtech.geomesa.bigtable.tools.BigtableDataStoreCommand.BigtableDistributedCommand
 import org.locationtech.geomesa.hbase.tools.data._
 import org.locationtech.geomesa.hbase.tools.export.HBaseExportCommand
+import org.locationtech.geomesa.hbase.tools.ingest.HBaseIngestCommand
 import org.locationtech.geomesa.hbase.tools.stats._
 import org.locationtech.geomesa.hbase.tools.status._
 import org.locationtech.geomesa.tools.export.GenerateAvroSchemaCommand
@@ -28,12 +30,12 @@ object BigtableRunner extends Runner {
     new HBaseDescribeSchemaCommand with BigtableDataStoreCommand,
     new EnvironmentCommand,
     new HBaseExplainCommand with BigtableDataStoreCommand,
-    new HBaseExportCommand with BigtableDataStoreCommand,
+    new HBaseExportCommand with BigtableDistributedCommand,
     new HelpCommand(this, jc),
-    new BigtableIngestCommand,
-    new HBaseKeywordsCommand with BigtableDataStoreCommand,
+    new HBaseIngestCommand with BigtableDistributedCommand,
     new HBaseGetTypeNamesCommand with BigtableDataStoreCommand,
     new HBaseRemoveSchemaCommand with BigtableDataStoreCommand,
+    new HBaseUpdateSchemaCommand with BigtableDataStoreCommand,
     new HBaseVersionRemoteCommand with BigtableDataStoreCommand,
     new VersionCommand,
     new HBaseGetSftConfigCommand with BigtableDataStoreCommand,

@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -11,19 +11,20 @@ package org.locationtech.geomesa.utils.geotools
 import java.nio.charset.StandardCharsets
 import java.util.{Date, UUID}
 
-import com.vividsolutions.jts.geom._
 import org.geotools.feature.AttributeTypeBuilder
 import org.geotools.geometry.DirectPosition2D
 import org.locationtech.geomesa.curve.TimePeriod.TimePeriod
 import org.locationtech.geomesa.curve.{TimePeriod, XZSFC}
-import org.locationtech.geomesa.utils.conf.SemanticVersion
+import org.locationtech.geomesa.utils.conf.{FeatureExpiration, IndexId, SemanticVersion}
 import org.locationtech.geomesa.utils.geometry.GeometryPrecision
-import org.locationtech.geomesa.utils.index.IndexMode.IndexMode
+import org.locationtech.geomesa.utils.geotools.SimpleFeatureTypes.Configs
+import org.locationtech.geomesa.utils.geotools.converters.FastConverter
 import org.locationtech.geomesa.utils.index.VisibilityLevel
 import org.locationtech.geomesa.utils.index.VisibilityLevel.VisibilityLevel
+import org.locationtech.geomesa.utils.stats.Cardinality
 import org.locationtech.geomesa.utils.stats.Cardinality._
 import org.locationtech.geomesa.utils.stats.IndexCoverage._
-import org.locationtech.geomesa.utils.stats.{Cardinality, IndexCoverage}
+import org.locationtech.jts.geom._
 import org.opengis.feature.`type`.AttributeDescriptor
 import org.opengis.feature.simple.{SimpleFeature, SimpleFeatureType}
 
@@ -111,74 +112,50 @@ object RichAttributeDescriptors {
   // noinspection AccessorLikeMethodIsEmptyParen
   implicit class RichAttributeDescriptor(val ad: AttributeDescriptor) extends AnyVal {
 
-    def setIndexCoverage(coverage: IndexCoverage): Unit = ad.getUserData.put(OPT_INDEX, coverage.toString)
-
-    def getIndexCoverage(): IndexCoverage = {
-      val coverage = ad.getUserData.get(OPT_INDEX).asInstanceOf[String]
-      if (coverage == null) { IndexCoverage.NONE } else {
-        Try(IndexCoverage.withName(coverage)).getOrElse {
-          if (java.lang.Boolean.valueOf(coverage)) {
-            IndexCoverage.JOIN
-          } else {
-            IndexCoverage.NONE
-          }
-        }
-      }
-    }
-
     def setKeepStats(enabled: Boolean): Unit = if (enabled) {
-      ad.getUserData.put(OPT_STATS, "true")
+      ad.getUserData.put(OptStats, "true")
     } else {
-      ad.getUserData.remove(OPT_STATS)
+      ad.getUserData.remove(OptStats)
     }
-    def isKeepStats(): Boolean = Option(ad.getUserData.get(OPT_STATS)).contains("true")
+    def isKeepStats(): Boolean = Option(ad.getUserData.get(OptStats)).contains("true")
 
-    def isIndexValue(): Boolean = Option(ad.getUserData.get(OPT_INDEX_VALUE)).contains("true")
+    def isIndexValue(): Boolean = Option(ad.getUserData.get(OptIndexValue)).contains("true")
 
     def getColumnGroups(): Set[String] =
-      Option(ad.getUserData.get(OPT_COL_GROUPS).asInstanceOf[String]).map(_.split(",").toSet).getOrElse(Set.empty)
+      Option(ad.getUserData.get(OptColumnGroups).asInstanceOf[String]).map(_.split(",").toSet).getOrElse(Set.empty)
 
     def setCardinality(cardinality: Cardinality): Unit =
-      ad.getUserData.put(OPT_CARDINALITY, cardinality.toString)
+      ad.getUserData.put(OptCardinality, cardinality.toString)
 
     def getCardinality(): Cardinality =
-      Option(ad.getUserData.get(OPT_CARDINALITY).asInstanceOf[String])
+      Option(ad.getUserData.get(OptCardinality).asInstanceOf[String])
           .flatMap(c => Try(Cardinality.withName(c)).toOption).getOrElse(Cardinality.UNKNOWN)
 
-    def isJson(): Boolean = Option(ad.getUserData.get(OPT_JSON)).contains("true")
+    def isJson(): Boolean = Option(ad.getUserData.get(OptJson)).contains("true")
 
-    def setBinTrackId(opt: Boolean): Unit = ad.getUserData.put(OPT_BIN_TRACK_ID, opt.toString)
+    def setListType(typ: Class[_]): Unit = ad.getUserData.put(UserDataListType, typ.getName)
 
-    def isBinTrackId(): Boolean = Option(ad.getUserData.get(OPT_BIN_TRACK_ID)).contains("true")
-
-    def setListType(typ: Class[_]): Unit = ad.getUserData.put(USER_DATA_LIST_TYPE, typ.getName)
-
-    def getListType(): Class[_] = tryClass(ad.getUserData.get(USER_DATA_LIST_TYPE).asInstanceOf[String])
+    def getListType(): Class[_] = tryClass(ad.getUserData.get(UserDataListType).asInstanceOf[String])
 
     def setMapTypes(keyType: Class[_], valueType: Class[_]): Unit = {
-      ad.getUserData.put(USER_DATA_MAP_KEY_TYPE, keyType.getName)
-      ad.getUserData.put(USER_DATA_MAP_VALUE_TYPE, valueType.getName)
+      ad.getUserData.put(UserDataMapKeyType, keyType.getName)
+      ad.getUserData.put(UserDataMapValueType, valueType.getName)
     }
 
     def getMapTypes(): (Class[_], Class[_]) =
-      (tryClass(ad.getUserData.get(USER_DATA_MAP_KEY_TYPE)), tryClass(ad.getUserData.get(USER_DATA_MAP_VALUE_TYPE)))
+      (tryClass(ad.getUserData.get(UserDataMapKeyType)), tryClass(ad.getUserData.get(UserDataMapValueType)))
 
     private def tryClass(value: AnyRef): Class[_] = Try(Class.forName(value.asInstanceOf[String])).getOrElse(null)
 
-    def isIndexed: Boolean = getIndexCoverage() match {
-      case IndexCoverage.FULL | IndexCoverage.JOIN => true
-      case IndexCoverage.NONE => false
-    }
-
-    def isList: Boolean = ad.getUserData.containsKey(USER_DATA_LIST_TYPE)
+    def isList: Boolean = ad.getUserData.containsKey(UserDataListType)
 
     def isMap: Boolean =
-      ad.getUserData.containsKey(USER_DATA_MAP_KEY_TYPE) && ad.getUserData.containsKey(USER_DATA_MAP_VALUE_TYPE)
+      ad.getUserData.containsKey(UserDataMapKeyType) && ad.getUserData.containsKey(UserDataMapValueType)
 
     def isMultiValued: Boolean = isList || isMap
 
     def getPrecision: GeometryPrecision = {
-      Option(ad.getUserData.get(OPT_PRECISION).asInstanceOf[String]).map(_.split(',')) match {
+      Option(ad.getUserData.get(OptPrecision).asInstanceOf[String]).map(_.split(',')) match {
         case None => GeometryPrecision.FullPrecision
         case Some(Array(xy)) => GeometryPrecision.TwkbPrecision(xy.toByte)
         case Some(Array(xy, z)) => GeometryPrecision.TwkbPrecision(xy.toByte, z.toByte)
@@ -190,25 +167,21 @@ object RichAttributeDescriptors {
 
   implicit class RichAttributeTypeBuilder(val builder: AttributeTypeBuilder) extends AnyVal {
 
-    def indexCoverage(coverage: IndexCoverage): AttributeTypeBuilder = builder.userData(OPT_INDEX, coverage.toString)
+    def indexCoverage(coverage: IndexCoverage): AttributeTypeBuilder = builder.userData(OptIndex, coverage.toString)
 
-    def indexValue(indexValue: Boolean): AttributeTypeBuilder = builder.userData(OPT_INDEX_VALUE, indexValue)
+    def indexValue(indexValue: Boolean): AttributeTypeBuilder = builder.userData(OptIndexValue, indexValue)
 
     def cardinality(cardinality: Cardinality): AttributeTypeBuilder =
-      builder.userData(OPT_CARDINALITY, cardinality.toString)
+      builder.userData(OptCardinality, cardinality.toString)
 
-    def collectionType(typ: Class[_]): AttributeTypeBuilder = builder.userData(USER_DATA_LIST_TYPE, typ)
+    def collectionType(typ: Class[_]): AttributeTypeBuilder = builder.userData(UserDataListType, typ)
 
     def mapTypes(keyType: Class[_], valueType: Class[_]): AttributeTypeBuilder =
-      builder.userData(USER_DATA_MAP_KEY_TYPE, keyType).userData(USER_DATA_MAP_VALUE_TYPE, valueType)
+      builder.userData(UserDataMapKeyType, keyType).userData(UserDataMapValueType, valueType)
   }
 }
 
 object RichSimpleFeatureType {
-
-  import RichAttributeDescriptors.RichAttributeDescriptor
-
-  import scala.collection.JavaConversions._
 
   // in general we store everything as strings so that it's easy to pass to accumulo iterators
   implicit class RichSimpleFeatureType(val sft: SimpleFeatureType) extends AnyVal {
@@ -222,23 +195,21 @@ object RichSimpleFeatureType {
     }
     def getGeomIndex: Int = Option(getGeomField).map(sft.indexOf).getOrElse(-1)
 
-    def getDtgField: Option[String] = userData[String](DEFAULT_DATE_KEY)
+    def getDtgField: Option[String] = userData[String](DefaultDtgField)
     def getDtgIndex: Option[Int] = getDtgField.map(sft.indexOf).filter(_ != -1)
-    def getDtgDescriptor: Option[AttributeDescriptor] = getDtgIndex.map(sft.getDescriptor)
-    def clearDtgField(): Unit = sft.getUserData.remove(DEFAULT_DATE_KEY)
+    def clearDtgField(): Unit = sft.getUserData.remove(DefaultDtgField)
     def setDtgField(dtg: String): Unit = {
       val descriptor = sft.getDescriptor(dtg)
       require(descriptor != null && classOf[Date].isAssignableFrom(descriptor.getType.getBinding),
         s"Invalid date field '$dtg' for schema $sft")
-      sft.getUserData.put(DEFAULT_DATE_KEY, dtg)
+      sft.getUserData.put(DefaultDtgField, dtg)
     }
 
-    def getStIndexSchema: String = userData[String](ST_INDEX_SCHEMA_KEY).orNull
-    def setStIndexSchema(schema: String): Unit = sft.getUserData.put(ST_INDEX_SCHEMA_KEY, schema)
+    def statsEnabled: Boolean =
+      Option(sft.getUserData.get(StatsEnabled)).forall(FastConverter.convert(_, classOf[java.lang.Boolean]))
+    def setStatsEnabled(enabled: Boolean): Unit = sft.getUserData.put(StatsEnabled, enabled.toString)
 
-    def isLogicalTime: Boolean = userData[String](LOGICAL_TIME_KEY).forall(_.toBoolean)
-
-    def getBinTrackId: Option[String] = sft.getAttributeDescriptors.find(_.isBinTrackId()).map(_.getLocalName)
+    def isLogicalTime: Boolean = userData[String](TableLogicalTime).forall(_.toBoolean)
 
     def isPoints: Boolean = {
       val gd = sft.getGeometryDescriptor
@@ -253,27 +224,32 @@ object RichSimpleFeatureType {
       gd != null && gd.getType.getBinding == classOf[LineString]
     }
 
-    def getVisibilityLevel: VisibilityLevel = userData[String](VIS_LEVEL_KEY) match {
+    def getVisibilityLevel: VisibilityLevel = userData[String](IndexVisibilityLevel) match {
       case None        => VisibilityLevel.Feature
       case Some(level) => VisibilityLevel.withName(level.toLowerCase)
     }
-    def setVisibilityLevel(vis: VisibilityLevel): Unit = sft.getUserData.put(VIS_LEVEL_KEY, vis.toString)
+    def setVisibilityLevel(vis: VisibilityLevel): Unit = sft.getUserData.put(IndexVisibilityLevel, vis.toString)
 
-    def getZ3Interval: TimePeriod = userData[String](Z3_INTERVAL_KEY) match {
+    def getZ3Interval: TimePeriod = userData[String](IndexZ3Interval) match {
       case None    => TimePeriod.Week
       case Some(i) => TimePeriod.withName(i.toLowerCase)
     }
-    def setZ3Interval(i: TimePeriod): Unit = sft.getUserData.put(Z3_INTERVAL_KEY, i.toString)
+    def setZ3Interval(i: TimePeriod): Unit = sft.getUserData.put(IndexZ3Interval, i.toString)
 
-    def getXZPrecision: Short = userData[String](XZ_PRECISION_KEY).map(_.toShort).getOrElse(XZSFC.DefaultPrecision)
-    def setXZPrecision(p: Short): Unit = sft.getUserData.put(XZ_PRECISION_KEY, p.toString)
+    def getS3Interval: TimePeriod = userData[String](S3_INTERVAL_KEY) match {
+      case None    => TimePeriod.Week
+      case Some(i) => TimePeriod.withName(i.toLowerCase)
+    }
+    def setS3Interval(i: TimePeriod): Unit = sft.getUserData.put(S3_INTERVAL_KEY, i.toString)
 
-    //  If no user data is specified when creating a new SFT, we should default to 'true'.
-    def isTableSharing: Boolean = userData[String](TABLE_SHARING_KEY).forall(_.toBoolean)
-    def setTableSharing(sharing: Boolean): Unit = sft.getUserData.put(TABLE_SHARING_KEY, sharing.toString)
+    def getXZPrecision: Short = userData[String](IndexXzPrecision).map(_.toShort).getOrElse(XZSFC.DefaultPrecision)
+    def setXZPrecision(p: Short): Unit = sft.getUserData.put(IndexXzPrecision, p.toString)
 
-    def getTableSharingPrefix: String = userData[String](SHARING_PREFIX_KEY).getOrElse("")
-    def setTableSharingPrefix(prefix: String): Unit = sft.getUserData.put(SHARING_PREFIX_KEY, prefix)
+    // note: defaults to false now
+    @deprecated("table sharing no longer supported")
+    def isTableSharing: Boolean = userData[String](TableSharing).exists(_.toBoolean)
+    @deprecated("table sharing no longer supported")
+    def getTableSharingPrefix: String = userData[String](TableSharingPrefix).getOrElse("")
 
     def getTableSharingBytes: Array[Byte] = if (sft.isTableSharing) {
       sft.getTableSharingPrefix.getBytes(StandardCharsets.UTF_8)
@@ -281,58 +257,60 @@ object RichSimpleFeatureType {
       Array.empty[Byte]
     }
 
-    def setCompression(c: String): Unit = {
-      sft.getUserData.put(COMPRESSION_ENABLED, "true")
-      sft.getUserData.put(COMPRESSION_TYPE, c)
-    }
-
-    // gets (name, version, mode) of enabled indices
-    def getIndices: Seq[(String, Int, IndexMode)] = {
-      def toTuple(string: String): (String, Int, IndexMode) = {
-        val Array(n, v, m) = string.split(":")
-        (n, v.toInt, new IndexMode(m.toInt))
+    def setCompression(c: String): Unit = sft.getUserData.put(TableCompressionType, c)
+    def getCompression: Option[String] = {
+      userData[String](TableCompressionType).orElse {
+        // check deprecated 'enabled' config, which defaults to 'gz'
+        userData[String]("geomesa.table.compression.enabled").collect { case e if e.toBoolean => "gz" }
       }
-      userData[String](INDEX_VERSIONS).map(_.split(",").map(toTuple).toSeq).getOrElse(List.empty)
     }
-    def setIndices(indices: Seq[(String, Int, IndexMode)]): Unit =
-      sft.getUserData.put(INDEX_VERSIONS, indices.map { case (n, v, m) => s"$n:$v:${m.flag}"}.mkString(","))
 
-    def setUserDataPrefixes(prefixes: Seq[String]): Unit = sft.getUserData.put(USER_DATA_PREFIX, prefixes.mkString(","))
+    // gets indices configured for this sft
+    def getIndices: Seq[IndexId] =
+      userData[String](IndexVersions).map(_.split(",").map(IndexId.apply).toSeq).getOrElse(Seq.empty)
+    def setIndices(indices: Seq[IndexId]): Unit =
+      sft.getUserData.put(IndexVersions, indices.map(_.encoded).mkString(","))
+
+    def setUserDataPrefixes(prefixes: Seq[String]): Unit = sft.getUserData.put(UserDataPrefix, prefixes.mkString(","))
     def getUserDataPrefixes: Seq[String] =
-      Seq(GEOMESA_PREFIX) ++ userData[String](USER_DATA_PREFIX).map(_.split(",")).getOrElse(Array.empty)
+      Seq(GeomesaPrefix) ++ userData[String](UserDataPrefix).map(_.split(",")).getOrElse(Array.empty)
 
-    @deprecated("Table splitter key can vary with partitioning scheme")
-    def getTableSplitter: Option[Class[_]] = userData[String](TABLE_SPLITTER).map(Class.forName)
-    @deprecated("Table splitter options key can vary with partitioning scheme")
-    def getTableSplitterOptions: String = userData[String](TABLE_SPLITTER_OPTS).orNull
+    def setZShards(splits: Int): Unit = sft.getUserData.put(IndexZShards, splits.toString)
+    def getZShards: Int = userData[String](IndexZShards).map(_.toInt).getOrElse(4)
 
-    def setZShards(splits: Int): Unit = sft.getUserData.put(Z_SPLITS_KEY, splits.toString)
-    def getZShards: Int = userData[String](Z_SPLITS_KEY).map(_.toInt).getOrElse(4)
+    def setAttributeShards(splits: Int): Unit = sft.getUserData.put(IndexAttributeShards, splits.toString)
+    def getAttributeShards: Int = userData[String](IndexAttributeShards).map(_.toInt).getOrElse(4)
 
-    def setAttributeShards(splits: Int): Unit = sft.getUserData.put(ATTR_SPLITS_KEY, splits.toString)
-    def getAttributeShards: Int = userData[String](ATTR_SPLITS_KEY).map(_.toInt).getOrElse(4)
+    def setIdShards(splits: Int): Unit = sft.getUserData.put(IndexIdShards, splits.toString)
+    def getIdShards: Int = userData[String](IndexIdShards).map(_.toInt).getOrElse(4)
 
-    def setIdShards(splits: Int): Unit = sft.getUserData.put(ID_SPLITS_KEY, splits.toString)
-    def getIdShards: Int = userData[String](ID_SPLITS_KEY).map(_.toInt).getOrElse(4)
+    def setUuid(uuid: Boolean): Unit = sft.getUserData.put(FidsAreUuids, String.valueOf(uuid))
+    def isUuid: Boolean = userData[String](FidsAreUuids).exists(java.lang.Boolean.parseBoolean)
+    def isUuidEncoded: Boolean = isUuid && userData[String](FidsAreUuidEncoded).forall(java.lang.Boolean.parseBoolean)
 
-    def setUuid(uuid: Boolean): Unit = sft.getUserData.put(FID_UUID_KEY, String.valueOf(uuid))
-    def isUuid: Boolean = userData[String](FID_UUID_KEY).exists(java.lang.Boolean.parseBoolean)
-    def isUuidEncoded: Boolean = isUuid && userData[String](FID_UUID_ENCODED_KEY).forall(java.lang.Boolean.parseBoolean)
+    def setFeatureExpiration(expiration: FeatureExpiration): Unit = {
+      val org.locationtech.geomesa.utils.conf.FeatureExpiration(string) = expiration
+      sft.getUserData.put(Configs.FeatureExpiration, string)
+    }
+    def getFeatureExpiration: Option[FeatureExpiration] =
+      userData[String](Configs.FeatureExpiration).map(org.locationtech.geomesa.utils.conf.FeatureExpiration.apply(sft, _))
+    def isFeatureExpirationEnabled: Boolean = sft.getUserData.containsKey(Configs.FeatureExpiration)
 
-    def setRemoteVersion(version: SemanticVersion): Unit = sft.getUserData.put(REMOTE_VERSION, String.valueOf(version))
+    def isTemporalPriority: Boolean = userData[String](TemporalPriority).exists(java.lang.Boolean.parseBoolean)
+
     def getRemoteVersion: Option[SemanticVersion] =
-      Option(sft.getUserData.get(REMOTE_VERSION).asInstanceOf[String]).map(SemanticVersion.apply)
+      Option(sft.getUserData.get(RemoteVersion).asInstanceOf[String]).map(SemanticVersion.apply)
 
     def getKeywords: Set[String] =
-      userData[String](KEYWORDS_KEY).map(_.split(KEYWORDS_DELIMITER).toSet).getOrElse(Set.empty)
+      userData[String](Keywords).map(_.split(KeywordsDelimiter).toSet).getOrElse(Set.empty)
 
     def addKeywords(keywords: Set[String]): Unit =
-      sft.getUserData.put(KEYWORDS_KEY, getKeywords.union(keywords).mkString(KEYWORDS_DELIMITER))
+      sft.getUserData.put(Keywords, getKeywords.union(keywords).mkString(KeywordsDelimiter))
 
     def removeKeywords(keywords: Set[String]): Unit =
-      sft.getUserData.put(KEYWORDS_KEY, getKeywords.diff(keywords).mkString(KEYWORDS_DELIMITER))
+      sft.getUserData.put(Keywords, getKeywords.diff(keywords).mkString(KeywordsDelimiter))
 
-    def removeAllKeywords(): Unit = sft.getUserData.remove(KEYWORDS_KEY)
+    def removeAllKeywords(): Unit = sft.getUserData.remove(Keywords)
 
     def userData[T](key: AnyRef): Option[T] = Option(sft.getUserData.get(key).asInstanceOf[T])
   }

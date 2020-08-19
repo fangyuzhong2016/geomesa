@@ -20,6 +20,8 @@ the string, like so:
 
 .. code-block:: java
 
+    import org.locationtech.geomesa.utils.interop.SimpleFeatureTypes;
+
     // append the user-data values to the end of the string, separated by a semi-colon
     String spec = "name:String,dtg:Date,*geom:Point:srid=4326;option.one='foo',option.two='bar'";
     SimpleFeatureType sft = SimpleFeatureTypes.createType("mySft", spec);
@@ -66,6 +68,8 @@ or when using ``SimpleFeatureTypes.createType``), you can append the attribute o
 separated with a colon:
 
 .. code-block:: java
+
+    import org.locationtech.geomesa.utils.interop.SimpleFeatureTypes;
 
     // append the user-data after the attribute type, separated by a colon
     String spec = "name:String:index=true,dtg:Date,*geom:Point:srid=4326";
@@ -121,18 +125,38 @@ key ``geomesa.index.dtg``. If you would prefer to not index any date, you may di
 Customizing Index Creation
 --------------------------
 
-To speed up ingestion, or because you are only using certain query patterns, you may disable some indices.
-The indices are created when calling ``createSchema``. If nothing is specified, the Z2/Z3 (or XZ2/XZ3
-depending on geometry type) indices and record indices will all be created, as well as any attribute
-indices you have defined.
+Instead of using the default indices, you may specify the exact indices to create. This may be used to create
+fewer indices (to speed up ingestion, or because you are only using certain query patterns), or to create additional
+indices (for example on non-default geometries or dates).
+
+The indices are created when calling ``createSchema``. If nothing is specified, the Z2, Z3 (or XZ2 and XZ3
+depending on geometry type) and ID indices will all be created, as well as any attribute indices you have defined.
 
 .. warning::
 
     Certain queries may be much slower if you disable an index.
 
-To enable only certain indices, you may set a user data value in your simple feature type. The user data key is
+To configure the indices, you may set a user data value in your simple feature type. The user data key is
 ``geomesa.indices.enabled``, and it should contain a comma-delimited list containing a subset of index
 identifiers, as specified in :ref:`index_overview`.
+
+In addition to specifying which types of indices to create, you may optionally specify the exact attributes that will
+be used in each index, by appending them with ``:``\ s after the index name. The following example shows two index
+configurations. The first configuration has a single Z3 index that includes the default attributes. The second
+configuration has two Z3 indices on different geometries, as well as an attribute index on name which includes
+a secondary index on dtg.
+
+.. code-block:: java
+
+    import org.locationtech.geomesa.utils.interop.SimpleFeatureTypes;
+
+    String spec = "name:String,dtg:Date,*start:Point:srid=4326,end:Point:srid=4326";
+    SimpleFeatureType sft = SimpleFeatureTypes.createType("mySft", spec);
+    // enable a default z3 index on start + dtg
+    sft.getUserData().put("geomesa.indices.enabled", "z3");
+    // alternatively, enable a z3 index on start + dtg, end + dtg, and an attribute index on
+    // name with a secondary index on dtg. note that this overrides the previous configuration
+    sft.getUserData().put("geomesa.indices.enabled", "z3:start:dtg,z3:end:dtg,attr:name:dtg");
 
 See :ref:`set_sft_options` for details on setting user data. If you are using the GeoMesa ``SchemaBuilder``,
 you may instead call the ``indexes`` methods:
@@ -474,7 +498,7 @@ For the default splitter, ``table.splitter.options`` should consist of comma-sep
 of ``id``, ``z3``, ``z2`` or ``attr`` (``xz3`` and ``xz2`` indices use ``z3`` and ``z2``, respectively).
 
 +------------+-------------------------------+----------------------------------------+
-| Index Type | Option                        | Description                            |
+| Index      | Option                        | Description                            |
 +============+===============================+========================================+
 | Z3/XZ3     | ``z3.min``                    | The minimum date for the data          |
 +            +-------------------------------+----------------------------------------+
@@ -541,28 +565,79 @@ Full Example
     sft.getUserData().put("table.splitter.options",
         "id.pattern:[0-9a-f],attr.name.pattern:[a-z],z3.min:2018-01-01,z3.max:2018-01-31,z3.bits:2,z2.bits:4");
 
-.. _stat_attribute_config:
+.. _query_interceptors:
+
+Configuring Query Interceptors
+------------------------------
+
+GeoMesa provides a chance for custom logic to be applied to a query before executing it. Query interceptors must
+be specified through user data in the simple feature type, and may be set before calling ``createSchema``, or
+updated by calling ``updateSchema``. To indicate query interceptors, use the key ``geomesa.query.interceptors``:
+
+.. code-block:: java
+
+    sft.getUserData().put("geomesa.query.interceptors", "com.example.MyQueryInterceptor");
+
+The value must be a comma-separated string consisting of the names of one or more classes implementing
+the trait ``org.locationtech.geomesa.index.planning.QueryInterceptor``:
+
+.. code-block:: scala
+
+    /**
+      * Provides a hook to modify a query before executing it
+      */
+    trait QueryInterceptor extends Closeable {
+
+      /**
+        * Called exactly once after the interceptor is instantiated
+        *
+        * @param ds data store
+        * @param sft simple feature type
+        */
+      def init(ds: DataStore, sft: SimpleFeatureType): Unit
+
+      /**
+        * Modifies the query in place
+        *
+        * @param query query
+        */
+      def rewrite(query: Query): Unit
+    }
+
+Interceptors must have a default, no-arg constructor. The interceptor lifecycle consists of:
+
+1. The instance is instantiated via reflection, using its default constructor
+#. The instance is initialized via the ``init`` method, passing in the data store containing the simple feature type
+#. ``rewrite`` is called repeatedly
+#. The instance is cleaned up via the ``close`` method
+
+Interceptors will be invoked in the order they are declared in the user data. In order to see detailed information
+on the results of query interceptors, you can enable ``TRACE``-level logging on the class
+``org.locationtech.geomesa.index.planning.QueryRunner$``.
+
+.. _stat_config:
 
 Configuring Cached Statistics
 -----------------------------
 
-GeoMesa allows for collecting summary statistics for attributes during ingest, which are then stored and
-available for instant querying. Hints are set on individual attributes using the key ``keep-stats``, as
-described in :ref:`attribute_options`.
+GeoMesa will collect and store summary statistics for attributes during ingest, which are then available for
+lookup and/or query planning. Stat generation can be enabled or disabled through the simple feature type
+user data using the key ``geomesa.stats.enable``. See :ref:`set_sft_options` for details on setting user data.
 
 .. note::
 
-    Cached statistics are currently only implemented for the Accumulo data store
+    Cached statistics are currently only implemented for the Accumulo and Redis data stores
 
-Stats are always collected for the default geometry, default date and any indexed attributes. See
-:ref:`stats_collected` for more details. In addition, any other attribute can be flagged for stats. This
-will cause the following stats to be collected for those attributes:
+If enabled, stats are always collected for the default geometry, default date and any indexed attributes. See
+:ref:`stats_collected` for more details. In addition, other attributes can be flagged for stats by using the key
+``keep-stats`` on individual attributes, as described in :ref:`attribute_options`. This will cause the following
+stats to be collected for those attributes:
 
 * Min/max (bounds)
 * Top-k
 
-Only attributes of the following types can be flagged for stats: ``String``, ``Integer``, ``Long``,
-``Float``, ``Double``, ``Date`` and ``Geometry``.
+Only attributes of type ``String``, ``Integer``, ``Long``, ``Float``, ``Double``, ``Date`` or ``Geometry`` can be
+flagged for stats.
 
 For example:
 
@@ -573,6 +648,19 @@ For example:
     sft.getDescriptor("name").getUserData().put("keep-stats", "true");
 
 See :ref:`cli_analytic` and :ref:`stats_api` for information on reading cached stats.
+
+Configuring Temporal Priority
+-----------------------------
+
+For some large time-based datasets, an index that leverages a temporal predicate will almost always be faster
+to query than one that doesn't. A schema can be configured to prioritize temporal predicates by setting the
+user-data key ``geomesa.temporal.priority``:
+
+.. code-block:: java
+
+    sft.getUserData().put("geomesa.temporal.priority", "true");
+
+This may be configured before calling ``createSchema``, or updated by calling ``updateSchema``.
 
 Mixed Geometry Types
 --------------------
@@ -585,7 +673,7 @@ features), you must explicitly enable "mixed" indexing mode. All other geometry 
 ``LineString``, ``Polygon``, etc) are not affected.
 
 Mixed geometries must be declared when calling ``createSchema``. It may be specified through
-the simple feature type user data using the key ``geomesa.mixed.geometries``.  See :ref:`set_sft_options` for
+the simple feature type user data using the key ``geomesa.mixed.geometries``. See :ref:`set_sft_options` for
 details on setting user data.
 
 .. code-block:: java

@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -9,17 +9,16 @@
 package org.locationtech.geomesa.tools
 
 import java.util
-import java.util.Locale
 import java.util.regex.Pattern
 
-import com.beust.jcommander.converters.BaseConverter
 import com.beust.jcommander.{Parameter, ParameterException}
-import org.locationtech.geomesa.index.api.{GeoMesaFeatureIndex, WrappedFeature}
+import org.locationtech.geomesa.convert.Modes.ErrorMode
+import org.locationtech.geomesa.index.api.GeoMesaFeatureIndex
 import org.locationtech.geomesa.index.geotools.GeoMesaDataStore
-import org.locationtech.geomesa.tools.DistributedRunParam.ModeConverter
+import org.locationtech.geomesa.index.index.attribute.AttributeIndex
+import org.locationtech.geomesa.tools.DistributedRunParam.RunModes
 import org.locationtech.geomesa.tools.DistributedRunParam.RunModes.RunMode
-import org.locationtech.geomesa.tools.utils.DataFormats
-import org.locationtech.geomesa.tools.utils.ParameterConverters.{FilterConverter, HintConverter}
+import org.locationtech.geomesa.tools.utils.ParameterConverters.{ErrorModeConverter, FilterConverter, HintConverter}
 import org.locationtech.geomesa.utils.index.IndexMode.IndexMode
 import org.opengis.filter.Filter
 
@@ -48,6 +47,10 @@ trait OptionalTypeNameParam extends TypeNameParam {
   var featureName: String = _
 }
 
+trait ProvidedTypeNameParam extends TypeNameParam {
+  var featureName: String = _
+}
+
 trait PasswordParams {
   @Parameter(names = Array("-p", "--password"), description = "Connection password")
   var password: String = _
@@ -58,12 +61,7 @@ trait KerberosParams {
   var keytab: String = _
 }
 
-trait RequiredCredentialsParams extends PasswordParams {
-  @Parameter(names = Array("-u", "--user"), description = "Connection user name", required = true)
-  var user: String = _
-}
-
-trait OptionalCredentialsParams extends PasswordParams {
+trait CredentialsParams extends PasswordParams {
   @Parameter(names = Array("-u", "--user"), description = "Connection user name")
   var user: String = _
 }
@@ -141,95 +139,132 @@ trait InputFilesParam {
   var files: java.util.List[String] = new util.ArrayList[String]()
 }
 
-trait InputFormatParam extends InputFilesParam {
-
-  def format: String
-
-  def fmt: DataFormats.DataFormat = {
-    import scala.collection.JavaConversions._
-    val fmtParam = Option(format).flatMap(f => DataFormats.values.find(_.toString.equalsIgnoreCase(f)))
-    lazy val fmtFile = files.flatMap(DataFormats.fromFileName(_).right.toOption).headOption
-    fmtParam.orElse(fmtFile).orNull
-  }
-}
-
-trait OptionalInputFormatParam extends InputFormatParam {
-  @Parameter(names = Array("--input-format"), description = "File format of input files (shp, csv, tsv, avro, etc). Optional, autodetection will be attempted.")
-  var format: String = _
+trait OptionalInputFormatParam extends InputFilesParam {
+  @Parameter(names = Array("--input-format"), description = "File format of input files (shp, csv, tsv, avro, etc). Optional, auto-detection will be attempted")
+  var inputFormat: String = _
 }
 
 trait ConverterConfigParam {
-  def config: String
-}
-
-trait OptionalConverterConfigParam extends ConverterConfigParam {
-  @Parameter(names = Array("-C", "--converter"), description = "GeoMesa converter specification as a config string, file name, or name of an available converter",
-    required = false)
+  @Parameter(names = Array("-C", "--converter"), description = "GeoMesa converter specification as a config string, file name, or name of an available converter")
   var config: String = _
+
+  @Parameter(names = Array("--converter-error-mode"), description = "Override the converter error mode - 'skip-bad-records' or 'raise-errors'", converter = classOf[ErrorModeConverter])
+  var errorMode: ErrorMode = _
 }
 
-trait RequiredConverterConfigParam extends ConverterConfigParam {
-  @Parameter(names = Array("-C", "--converter"), description = "GeoMesa converter specification as a config string, file name, or name of an available converter",
-    required = true)
-  var config: String = _
-}
-
-trait IndexParam extends TypeNameParam {
-
-  def index: String
+object IndexParam {
 
   @throws[ParameterException]
-  def loadRequiredIndex(ds: GeoMesaDataStore[_, _, _], mode: IndexMode): GeoMesaFeatureIndex[_, _, _] =
-    loadIndex(ds, mode).get
+  def loadIndex[DS <: GeoMesaDataStore[DS]](ds: DS,
+                                            typeName: String,
+                                            index: String,
+                                            mode: IndexMode): GeoMesaFeatureIndex[_, _] = {
+    val sft = ds.getSchema(typeName)
+    val indices = ds.manager.indices(sft, mode)
 
-  @throws[ParameterException]
-  def loadIndex(ds: GeoMesaDataStore[_, _, _], mode: IndexMode): Option[GeoMesaFeatureIndex[_, _, _]] = {
-    Option(index).filter(_.length > 0).map { name =>
-      val sft = ds.getSchema(featureName)
-      def all = ds.manager.indices(sft, None, mode).asInstanceOf[Seq[GeoMesaFeatureIndex[_, _, _]]]
-      ds.manager.indices(sft, Some(name), mode) match {
-        case Nil =>
-          throw new ParameterException(s"Specified index '$index' not found. Available indices are: " +
-              all.map(i => s"${i.name}, ${i.identifier}").mkString(", "))
-        case Seq(idx) =>
-          idx.asInstanceOf[GeoMesaFeatureIndex[_ <: GeoMesaDataStore[_, _, _], _ <: WrappedFeature, _]]
-        case s =>
-          throw new ParameterException(s"Specified index '$index' is ambiguous. Available indices are: " +
-              all.map(_.identifier).mkString(", "))
-      }
+    lazy val available = {
+      val names = scala.collection.mutable.Map.empty[String, Int].withDefaultValue(0)
+      indices.foreach(i => names.put(i.name, names(i.name) + 1))
+      (indices.map(_.identifier) ++ names.collect { case (n, 1) => n }).distinct.sorted.mkString(", ")
+    }
+
+    def single(indices: Seq[GeoMesaFeatureIndex[_, _]]): Option[GeoMesaFeatureIndex[_, _]] = indices match {
+      case Nil => None
+      case Seq(i) => Some(i)
+      case _ => throw new ParameterException(s"Specified index '$index' is ambiguous. Available indices are: $available")
+    }
+
+    def byId: Option[GeoMesaFeatureIndex[_, _]] = indices.find(_.identifier.equalsIgnoreCase(index))
+    def byName: Option[GeoMesaFeatureIndex[_, _]] = single(indices.filter(_.name.equalsIgnoreCase(index)))
+    // check for attr vs join index name
+    def byJoin: Option[GeoMesaFeatureIndex[_, _]] = if (!index.equalsIgnoreCase(AttributeIndex.name)) { None } else {
+      single(indices.filter(_.name == AttributeIndex.JoinIndexName))
+    }
+
+    byId.orElse(byName).orElse(byJoin).getOrElse {
+      throw new ParameterException(s"Specified index '$index' not found. Available indices are: $available")
     }
   }
 }
 
+trait IndexParam {
+  def index: String
+}
+
 trait OptionalIndexParam extends IndexParam {
-  @Parameter(names = Array("--index"), description = "Specify a particular index to query", required = false)
+
+  @Parameter(names = Array("--index"), description = "Specify a particular GeoMesa index", required = false)
   var index: String = _
+
+  @throws[ParameterException]
+  def loadIndex[DS <: GeoMesaDataStore[DS]](ds: DS, typeName: String, mode: IndexMode): Option[GeoMesaFeatureIndex[_, _]] =
+    Option(index).filterNot(_.isEmpty).map(IndexParam.loadIndex(ds, typeName, _, mode))
 }
 
 trait RequiredIndexParam extends IndexParam {
+
   @Parameter(names = Array("--index"), description = "Specify a particular GeoMesa index", required = true)
   var index: String = _
+
+  @throws[ParameterException]
+  def loadIndex[DS <: GeoMesaDataStore[DS]](ds: DS, typeName: String, mode: IndexMode): GeoMesaFeatureIndex[_, _] =
+    IndexParam.loadIndex(ds, typeName, index, mode)
+}
+
+trait IndicesParam {
+
+  import scala.collection.JavaConverters._
+
+  @Parameter(names = Array("--index"), description = "Specify GeoMesa index(es) - comma-separate or use multiple flags", required = true)
+  var indexNames: java.util.List[String] = _
+
+  @throws[ParameterException]
+  def loadIndices[DS <: GeoMesaDataStore[DS]](ds: DS, typeName: String, mode: IndexMode): Seq[GeoMesaFeatureIndex[_, _]] =
+    indexNames.asScala.map(IndexParam.loadIndex(ds, typeName, _, mode))
 }
 
 trait DistributedRunParam {
-  @Parameter(names = Array("--run-mode"), description = "Run locally or on a cluster", required = false, converter = classOf[ModeConverter])
-  var mode: RunMode = _
+
+  @Parameter(names = Array("--run-mode"), description = "Run locally or on a cluster", required = false)
+  var runMode: String = _
+
+  lazy val mode: Option[RunMode] = {
+    Option(runMode).map {
+      case m if m.equalsIgnoreCase(RunModes.Local.toString) => RunModes.Local
+      case m if m.equalsIgnoreCase(RunModes.Distributed.toString) => RunModes.Distributed
+      case m if m.equalsIgnoreCase("distributedcombine") =>
+        DistributedRunParam.this match {
+          case p: DistributedCombineParam =>
+            Command.user.warn("Using deprecated run-mode 'DistributedCombine' - please use --combine-inputs instead")
+            p.combineInputs = true
+            RunModes.Distributed
+
+          case _ => throw invalid()
+        }
+
+      case _ => throw invalid()
+    }
+  }
+
+  private def invalid(): ParameterException =
+    new ParameterException(s"Invalid --run-mode '$runMode': valid values are 'local' or 'distributed'")
 }
 
 object DistributedRunParam {
   object RunModes extends Enumeration {
     type RunMode = Value
-    val Distributed, DistributedCombine, Local = Value
+    val Distributed, Local = Value
   }
+}
 
-  class ModeConverter(name: String) extends BaseConverter[RunMode](name) {
-    override def convert(value: String): RunMode = {
-      Option(value).flatMap(v => RunModes.values.find(_.toString.equalsIgnoreCase(v))).getOrElse {
-        val error = s"run-mode. Valid values are: ${RunModes.values.map(_.toString.toLowerCase(Locale.US)).mkString(", ")}"
-        throw new ParameterException(getErrorString(value, error))
-      }
-    }
-  }
+trait DistributedCombineParam {
+  @Parameter(
+    names = Array("--combine-inputs"),
+    description = "Combine multiple input files into a single input split (distributed jobs)")
+  var combineInputs: Boolean = false
+
+  @Parameter(names = Array("--split-max-size"), description = "Maximum size of a split in bytes (distributed jobs)")
+  var maxSplitSize: Integer = _
 }
 
 trait OutputPathParam {

@@ -15,6 +15,7 @@ Argument                 Description
 ``-c, --catalog *``      The catalog table containing schema metadata
 ``-f, --feature-name *`` The name of the schema
 ``-q, --cql``            CQL filter to select features to delete
+``--force``              Suppress confirmation prompt
 ======================== =========================================================
 
 .. _cli_ingest:
@@ -30,21 +31,23 @@ The converter framework is extensible via Java SPI, to allow support for custom 
 
 See :ref:`data_migration` for details on how the export/import commands can be used to move data between clusters.
 
-====================== =========================================================
-Argument               Description
-====================== =========================================================
-``-c, --catalog *``    The catalog table containing schema metadata
-``-C, --converter``    The GeoMesa converter used to create ``SimpleFeature``\ s
-``-s, --spec``         The ``SimpleFeatureType`` specification to create
-``-f, --feature-name`` The name of the schema
-``-t, --threads``      Number of parallel threads used
-``--input-format``     Format of input files (csv, tsv, avro, shp, json, etc)
-``--run-mode``         Must be one of ``local``, ``distributed``, or ``distributedcombine``
-``--split-max-size``   Maximum size of a split in bytes (distributed jobs)
-``--src-list``         Input files are text files with lists of files, one per line, to ingest.
-``--force``            Suppress any confirmation prompts
-``<files>...``         Input files to ingest
-====================== =========================================================
+========================== ==================================================================================================
+Argument                   Description
+========================== ==================================================================================================
+``-c, --catalog *``        The catalog table containing schema metadata
+``-f, --feature-name``     The name of the schema
+``-s, --spec``             The ``SimpleFeatureType`` specification to create
+``-C, --converter``        The GeoMesa converter used to create ``SimpleFeature``\ s
+``--converter-error-mode`` Override the error mode defined by the converter
+``-t, --threads``          Number of parallel threads used
+``--input-format``         Format of input files (csv, tsv, avro, shp, json, etc)
+``--no-tracking``          This application closes when ingest job is submitted. Useful for launching jobs with a script
+``--run-mode``             Must be one of ``local``, ``distributed``, or ``distributedcombine``
+``--split-max-size``       Maximum size of a split in bytes (distributed jobs)
+``--src-list``             Input files are text files with lists of files, one per line, to ingest
+``--force``                Suppress any confirmation prompts
+``<files>...``             Input files to ingest
+========================== ==================================================================================================
 
 The ``--converter`` argument may be any of the following:
 
@@ -61,6 +64,9 @@ mode, using schema inference to generate the converter. The converter definition
 satisfaction, then used for the entire data set with a distributed ingest.
 
 See :ref:`cli_converter_conf` for more details on specifying the converter.
+
+The ``converter-error-mode`` argument may be used to override the error mode defined in the converter. It must be
+one of ``skip-bad-records`` or ``raise-errors``.
 
 If the ``--feature-name`` is specified and the schema already exists, then ``--spec`` is not required. Likewise,
 if a converter is not defined, the schema will be inferred alongside the converter. Otherwise, ``--spec`` may be
@@ -79,6 +85,11 @@ See :ref:`cli_sft_conf` for more details on specifying the ``SimpleFeatureType``
 The ``--input-format`` argument can be used to specify the type of files being ingested. Currently
 GeoMesa supports Avro, CSV, TSV, Json/GeoJson, GML, and SHP. If not specified, the input file extensions
 will be used to determine the file type.
+
+The ``--no-tracking`` argument instructs the application to close when the ingest job has been submitted rather than
+tracking and displaying the progress of the ingest. This is useful when a script is submitting the job or it is
+undesirable to leave the JVM running. Note that supplying this parameter does not silence the application and it will
+still provide information about the status of the job submission.
 
 The ``--run-mode`` argument can be used to run ingestion locally or distributed (using map/reduce). Note that in
 order to run in distributed mode, the input files must be in HDFS. By default, input files on the local filesystem
@@ -116,3 +127,6 @@ disabled in this case, and progress indicators may not be entirely accurate, as 
 For example::
 
     cat foo.csv | geomesa-accumulo ingest ...
+
+For local ingests, feature writers will be pooled and only flushed periodically. The frequency of flushes can be
+controlled via the system property ``geomesa.ingest.local.batch.size``, and defaults to every 20,000 features.

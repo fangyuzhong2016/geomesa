@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -12,19 +12,19 @@ import java.io.Closeable
 
 import com.github.benmanes.caffeine.cache.Caffeine
 import com.typesafe.scalalogging.LazyLogging
-import com.vividsolutions.jts.geom.{Geometry, Point}
 import org.geotools.data.{DataStore, FeatureWriter, Query, Transaction}
-import org.geotools.factory.Hints
-import org.geotools.geojson.geom.GeometryJSON
+import org.geotools.util.factory.Hints
 import org.json4s.native.JsonMethods._
 import org.json4s.{JObject, _}
 import org.locationtech.geomesa.features.kryo.json.JsonPathParser
-import org.locationtech.geomesa.features.kryo.json.JsonPathParser.{PathAttribute, PathElement}
+import org.locationtech.geomesa.features.kryo.json.JsonPathParser.PathElement
 import org.locationtech.geomesa.geojson.query.{GeoJsonQuery, PropertyTransformer}
 import org.locationtech.geomesa.utils.cache.CacheKeyGenerator
 import org.locationtech.geomesa.utils.collection.{CloseableIterator, SelfClosingIterator}
 import org.locationtech.geomesa.utils.geotools.SimpleFeatureTypes
 import org.locationtech.geomesa.utils.io.CloseWithLogging
+import org.locationtech.jts.geom.{Geometry, Point}
+import org.locationtech.jts.io.geojson.GeoJsonReader
 import org.opengis.feature.simple.{SimpleFeature, SimpleFeatureType}
 import org.parboiled.errors.ParsingException
 
@@ -236,15 +236,15 @@ class GeoJsonGtIndex(ds: DataStore) extends GeoJsonIndex with LazyLogging {
 
 object GeoJsonGtIndex {
 
-  val IdPathKey  = s"${SimpleFeatureTypes.InternalConfigs.GEOMESA_PREFIX}json.id"
-  val DtgPathKey = s"${SimpleFeatureTypes.InternalConfigs.GEOMESA_PREFIX}json.dtg"
+  val IdPathKey  = s"${SimpleFeatureTypes.InternalConfigs.GeomesaPrefix}json.id"
+  val DtgPathKey = s"${SimpleFeatureTypes.InternalConfigs.GeomesaPrefix}json.dtg"
 
   private type ExtractGeometry = (JObject) => Geometry
   private type ExtractId = (JObject) => Option[String]
   private type ExtractDate = (JObject) => Option[AnyRef]
   private type JsonExtractors = (ExtractGeometry, ExtractId, ExtractDate)
 
-  private val jsonGeometry = new GeometryJSON()
+  private val geometryReader = new GeoJsonReader()
 
   private val extractorCache = Caffeine.newBuilder().build[String, JsonExtractors]()
 
@@ -269,7 +269,7 @@ object GeoJsonGtIndex {
       spec.append(",dtg:Date")
     }
 
-    val mixedGeoms = if (points) { Seq.empty } else { Seq(s"${SimpleFeatureTypes.Configs.MIXED_GEOMETRIES}='true'") }
+    val mixedGeoms = if (points) { Seq.empty } else { Seq(s"${SimpleFeatureTypes.Configs.MixedGeometries}='true'") }
     val id = idPath.map(p => s"$IdPathKey='$p'")
     val dtg = dtgPath.map(p => s"$DtgPathKey='$p'")
 
@@ -362,7 +362,7 @@ object GeoJsonGtIndex {
     * @return geometry, if present
     */
   private def getGeometry(feature: JObject): Geometry =
-    getByKey(feature, "geometry").map(g => jsonGeometry.read(compact(render(g)))).orNull
+    getByKey(feature, "geometry").map(g => geometryReader.read(compact(render(g)))).orNull
 
   /**
     * Gets a value from a json object by it's key

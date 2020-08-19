@@ -59,7 +59,11 @@ interactive Spark REPL with all dependencies needed for running Spark with GeoMe
 
 .. code-block:: bash
 
-    $ bin/spark-shell --jars geomesa-accumulo-spark-runtime_2.11-2.0.0.jar
+    $ bin/spark-shell --jars geomesa-accumulo-spark-runtime-accumulo2_2.11-2.0.0.jar
+
+.. note::
+
+  See :ref:`spatial_rdd_providers` for details on choosing the correct GeoMesa Spark runtime JAR.
 
 To configure the Spark Session such that we can serialize Simple Features and work with geometric UDTs and UDFs, we must
 alter the Spark Session as follows.
@@ -185,7 +189,7 @@ we make use of GeoMesa's DataFrame to GeoJSON converter.
 
 .. code-block:: scala
 
-    import org.locationtech.geomesa.spark.jts.util.GeoJSONExtensions._
+    import org.locationtech.geomesa.spark.sql.GeoJSONExtensions._
     val geojsonDF = aggregateDF.toGeoJSON
 
 If the result can fit in memory, it can then be collected on the driver and written to a file. If not, each executor can
@@ -275,7 +279,7 @@ This does make use of a few helper functions for setting the color and popup con
        layer.bindPopup(feature.properties.popupContent);
     }
 
-Afterwards, this simple HTML will load a leaflet with the data.
+Afterwards, this simple HTML will load a Leaflet map with the data.
 
 .. code-block:: html
 

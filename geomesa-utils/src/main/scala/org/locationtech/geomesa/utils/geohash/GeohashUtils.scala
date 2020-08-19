@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -10,7 +10,7 @@ package org.locationtech.geomesa.utils.geohash
 
 import org.locationtech.spatial4j.context.jts.JtsSpatialContext
 import com.typesafe.scalalogging.LazyLogging
-import com.vividsolutions.jts.geom._
+import org.locationtech.jts.geom._
 import org.locationtech.geomesa.utils.geotools.GeometryUtils
 import org.locationtech.geomesa.utils.iterators.CartesianProductIterable
 import org.locationtech.geomesa.utils.text.WKTUtils
@@ -364,14 +364,18 @@ object GeohashUtils
     val height = ur.getY - ll.getY
     require(width >= 0 && height >= 0, s"Wrong width $width and height $height of input bounding box, cannot process")
 
-    (60 to 0 by -5).foreach(prec => {
+    var prec = 60
+    while (prec >= 0) {
       val lonDelta = GeoHash.longitudeDeltaForPrecision(prec)
       val latDelta = GeoHash.latitudeDeltaForPrecision(prec)
       if (lonDelta >= width && latDelta >= height) {
         val geo = GeoHash(ll.getX, ll.getY, prec)
-        if (geo.bbox.covers(ur)) return Some(geo)
+        if (geo.bbox.covers(ur)) {
+          return Some(geo)
+        }
       }
-    })
+      prec -= 5
+    }
     None
   }
 

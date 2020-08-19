@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -13,13 +13,16 @@ import java.util.Date
 import com.beust.jcommander.ParameterException
 import com.beust.jcommander.converters.BaseConverter
 import org.geotools.filter.text.ecql.ECQL
-import org.geotools.util.Converters
-import org.locationtech.geomesa.tools.utils.DataFormats.DataFormat
+import org.locationtech.geomesa.convert.Modes.ErrorMode
+import org.locationtech.geomesa.tools.export.formats.ExportFormat
+import org.locationtech.geomesa.utils.geotools.converters.FastConverter
 import org.locationtech.geomesa.utils.text.DurationParsing
+import org.locationtech.geomesa.utils.text.Suffixes.Memory
 import org.opengis.filter.Filter
 
 import scala.concurrent.duration.Duration
 import scala.util.control.NonFatal
+import scala.util.{Failure, Success}
 
 object ParameterConverters {
 
@@ -56,12 +59,12 @@ object ParameterConverters {
     }
   }
 
-  class DataFormatConverter(name: String) extends BaseConverter[DataFormat](name) {
-    override def convert(value: String): DataFormat = {
+  class ExportFormatConverter(name: String) extends BaseConverter[ExportFormat](name) {
+    override def convert(value: String): ExportFormat = {
       try {
-        DataFormats.values.find(_.toString.equalsIgnoreCase(value)).getOrElse {
+        ExportFormat(value).getOrElse {
           throw new ParameterException(s"Invalid format '$value'. Valid values are " +
-              DataFormats.values.map(_.toString.toLowerCase).mkString("'", "', '", "'"))
+            ExportFormat.Formats.flatMap(f => f.extensions +: f.name).distinct.mkString("'", "', '", "'"))
         }
       } catch {
         case NonFatal(e) => throw new ParameterException(getErrorString(value, s"format: $e"))
@@ -90,8 +93,8 @@ object ParameterConverters {
         if (i == -1 || value.indexOf('/', i + 1) != -1) {
           throw new IllegalArgumentException("Interval from/to must be separated by a single '/'")
         }
-        val start = Converters.convert(value.substring(0, i), classOf[Date])
-        val end = Converters.convert(value.substring(i + 1), classOf[Date])
+        val start = FastConverter.convert(value.substring(0, i), classOf[Date])
+        val end = FastConverter.convert(value.substring(i + 1), classOf[Date])
         if (start == null || end == null) {
           throw new IllegalArgumentException(s"Could not convert $value to date interval")
         }
@@ -100,6 +103,23 @@ object ParameterConverters {
         case NonFatal(e) => throw new ParameterException(getErrorString(value, s"format: $e"))
       }
     }
+  }
 
+  class ErrorModeConverter(name: String) extends BaseConverter[ErrorMode](name) {
+    override def convert(value: String): ErrorMode = {
+      ErrorMode.values.find(_.toString.equalsIgnoreCase(value)).getOrElse {
+        throw new ParameterException(s"Invalid error mode '$value'. Valid values are " +
+            ErrorMode.values.map(_.toString).mkString("'", "', '", "'"))
+      }
+    }
+  }
+
+  class BytesConverter(name: String) extends BaseConverter[java.lang.Long](name) {
+    override def convert(value: String): java.lang.Long = {
+      Memory.bytes(value) match {
+        case Success(b) => b
+        case Failure(e) => throw new ParameterException(s"Invalid byte string '$value'", e)
+      }
+    }
   }
 }

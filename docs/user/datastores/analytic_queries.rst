@@ -67,6 +67,8 @@ heatmap from the query result. See :ref:`gdelt_heatmaps` for more information.
 +===========================+========================+======================+
 | QueryHints.DENSITY_BBOX   | ``ReferencedEnvelope`` | Use WPS              |
 +---------------------------+------------------------+                      +
+| QueryHints.DENSITY_GEOM   | String                 |                      |
++---------------------------+------------------------+                      +
 | QueryHints.DENSITY_WEIGHT | String                 |                      |
 +---------------------------+------------------------+                      +
 | QueryHints.DENSITY_WIDTH  | Integer                |                      |
@@ -79,10 +81,10 @@ heatmap from the query result. See :ref:`gdelt_heatmaps` for more information.
     .. code-tab:: scala
 
         import org.geotools.data.Transaction
-        import org.geotools.geometry.jts.ReferencedEnvelope.ReferencedEnvelope
+        import org.geotools.geometry.jts.ReferencedEnvelope
         import org.geotools.referencing.CRS
-        import org.locationtech.geomesa.accumulo.iterators.KryoLazyDensityIterator
         import org.locationtech.geomesa.index.conf.QueryHints
+        import org.locationtech.geomesa.index.iterators.DensityScan
 
         val bounds = new ReferencedEnvelope(-120.0, -110.0, 45.0, 55.0, CRS.decode("EPSG:4326"))
         query.getHints.put(QueryHints.DENSITY_BBOX, bounds)
@@ -90,17 +92,19 @@ heatmap from the query result. See :ref:`gdelt_heatmaps` for more information.
         query.getHints.put(QueryHints.DENSITY_HEIGHT, 500)
 
         val reader = dataStore.getFeatureReader(query, Transaction.AUTO_COMMIT)
-
-        val decode = KryoLazyDensityIterator.decodeResult(bounds, 500, 500)
-
-        while (reader.hasNext) {
+        try {
+          val decode = DensityScan.decodeResult(bounds, 500, 500)
+          while (reader.hasNext) {
             val pts = decode(reader.next())
             while (pts.hasNext) {
-                val (x, y, weight) = pts.next()
-                // do something with the cell
+              val (x, y, weight) = pts.next()
+              // do something with the cell
             }
+          }
+        } finally {
+          reader.close()
         }
-        reader.close()
+
 
 .. _statistical_queries:
 
@@ -163,27 +167,30 @@ This hint is a string describing the stats to be collected. Each type of stat ha
 representation. Multiple stats can be collected at once by delimiting them with a semi-colon. Instead
 of constructing stat strings by hand, there are convenience methods in ``org.locationtech.geomesa.utils.stats.Stat``
 that will generate valid stat strings. Stat strings can be validated by trying to parse them with
-``org.locationtech.geomesa.utils.stats.Stat.apply``.
+``org.locationtech.geomesa.utils.stats.Stat.apply``. The implementing classes are contained in the package
+``org.locationtech.geomesa.utils.stats``.
 
 Stat strings are as follows:
 
-========================== =====================================
-Type                       Representation
-========================== =====================================
-count                      ``Count()``
-min/max                    ``MinMax("foo")``
-enumeration                ``Enumeration("foo")``
-top-k                      ``TopK("foo")``
-frequency                  ``Frequency("foo",<precision>)``
-frequency (by time period) ``Frequency("foo","dtg",<time period>,<precision>)``
-Z3 frequency               ``Z3Frequency("geom","dtg",<time period>,<precision>)``
-histogram                  ``Histogram("foo",<bins>,<min>,<max>)``
-Z3 histogram               ``Z3Histogram("geom","dtg",<time period>,<bins>)``
-descriptive statistics     ``DescriptiveStats("foo","bar")``
-========================== =====================================
+========================== =================== =======================================================
+Type                       Implementation      Representation
+========================== =================== =======================================================
+count                      CountStat           ``Count()``
+min/max                    MinMax              ``MinMax("foo")``
+enumeration                EnumerationStat     ``Enumeration("foo")``
+top-k                      TopK                ``TopK("foo")``
+frequency                  Frequency           ``Frequency("foo",<precision>)``
+frequency (by time period) Frequency           ``Frequency("foo","dtg",<time period>,<precision>)``
+Z3 frequency               Z3Frequency         ``Z3Frequency("geom","dtg",<time period>,<precision>)``
+histogram                  Histogram           ``Histogram("foo",<bins>,<min>,<max>)``
+Z3 histogram               Z3Histogram         ``Z3Histogram("geom","dtg",<time period>,<bins>)``
+descriptive statistics     DescriptiveStats    ``DescriptiveStats("foo","bar")``
+multiple stats             SeqStat             ``Count(),MinMax("foo")``
+grouped stats              GroupBy             ``GroupBy("foo",MinMax("bar"))``
+========================== =================== =======================================================
 
-In addition to the above, stats can be calculated on grouped values, using ``GroupBy``. For example,
-``GroupBy("foo",MinMax("bar"))``.
+As seen in the table above, multiple stats can be calculated at once through comma delimiting. In addition,
+stats can be calculated on grouped values by using ``GroupBy`` on a nested stat expression.
 
 The Z3 frequency and histogram are special stats that will operate on the Z3 value created from the geometry and date.
 
@@ -220,7 +227,9 @@ GeoMesa datastores implement ``org.locationtech.geomesa.index.stats.HasGeoMesaSt
     def stats: org.locationtech.geomesa.index.stats.GeoMesaStats
 
 In addition to running queries, the ``GeoMesaStats`` interface can be used to retrieve cached stats.
-See :ref:`stat_attribute_config` for details on configuring cached stats.
+See :ref:`stat_config` for details on configuring cached stats.
+
+.. _arrow_encoding:
 
 Arrow Encoding
 --------------
@@ -232,34 +241,38 @@ The result of an Arrow query will be an iterator of SimpleFeatures, where the fi
 byte array. Concatenated together, the byte arrays will form an Arrow file, in the Arrow streaming format
 (i.e. no footer).
 
-In GeoServer you can use the ``ArrowConversionProcess``. Otherwise, the encoding is controlled through the
+In GeoServer you can use the ``ArrowConversionProcess``, or through WFS by setting
+``outputFormat=application/vnd.arrow`` and controlling the configuration through the ``format_options`` parameter,
+e.g. ``format_options=includeFids:true;batchSize:1000``. Otherwise, the encoding is controlled through the
 following query hints:
 
-+-------------------------------------+--------------------+----------------------+
-| Key                                 | Type               | GeoServer Conversion |
-+=====================================+====================+======================+
-| QueryHints.ARROW_ENCODE             | Boolean            | Use WPS              |
-+-------------------------------------+--------------------+                      +
-| QueryHints.ARROW_INCLUDE_FID        | Boolean (optional) |                      |
-+-------------------------------------+--------------------+                      +
-| QueryHints.ARROW_PROXY_FID          | Boolean (optional) |                      |
-+-------------------------------------+--------------------+                      +
-| QueryHints.ARROW_SORT_FIELD         | String (optional)  |                      |
-+-------------------------------------+--------------------+                      +
-| QueryHints.ARROW_SORT_REVERSE       | Boolean (optional) |                      |
-+-------------------------------------+--------------------+                      +
-| QueryHints.ARROW_DICTIONARY_FIELDS  | String (optional)  |                      |
-+-------------------------------------+--------------------+                      +
-| QueryHints.ARROW_DICTIONARY_VALUES  | String (optional)  |                      |
-+-------------------------------------+--------------------+                      +
-| QueryHints.ARROW_DICTIONARY_CACHED  | Boolean (optional) |                      |
-+-------------------------------------+--------------------+                      +
-| QueryHints.ARROW_MULTI_FILE         | Boolean (optional) |                      |
-+-------------------------------------+--------------------+                      +
-| QueryHints.ARROW_DOUBLE_PASS        | Boolean (optional) |                      |
-+-------------------------------------+--------------------+                      +
-| QueryHints.ARROW_BATCH_SIZE         | Integer (optional) |                      |
-+-------------------------------------+--------------------+----------------------+
++-------------------------------------+--------------------+------------------------------------+
+| Key                                 | Type               | GeoServer Format Option            |
++=====================================+====================+====================================+
+| QueryHints.ARROW_ENCODE             | Boolean            | outputFormat=application/vnd.arrow |
++-------------------------------------+--------------------+------------------------------------+
+| QueryHints.ARROW_INCLUDE_FID        | Boolean (optional) | includeFids                        |
++-------------------------------------+--------------------+------------------------------------+
+| QueryHints.ARROW_PROXY_FID          | Boolean (optional) | proxyFids                          |
++-------------------------------------+--------------------+------------------------------------+
+| QueryHints.ARROW_SORT_FIELD         | String (optional)  | sortField                          |
++-------------------------------------+--------------------+------------------------------------+
+| QueryHints.ARROW_SORT_REVERSE       | Boolean (optional) | sortReverse                        |
++-------------------------------------+--------------------+------------------------------------+
+| QueryHints.ARROW_DICTIONARY_FIELDS  | String (optional)  | dictionaryFields                   |
++-------------------------------------+--------------------+------------------------------------+
+| QueryHints.ARROW_DICTIONARY_VALUES  | String (optional)  | N/A                                |
++-------------------------------------+--------------------+------------------------------------+
+| QueryHints.ARROW_DICTIONARY_CACHED  | Boolean (optional) | useCachedDictionaries              |
++-------------------------------------+--------------------+------------------------------------+
+| QueryHints.ARROW_MULTI_FILE         | Boolean (optional) | N/A                                |
++-------------------------------------+--------------------+------------------------------------+
+| QueryHints.ARROW_DOUBLE_PASS        | Boolean (optional) | doublePass                         |
++-------------------------------------+--------------------+------------------------------------+
+| QueryHints.ARROW_BATCH_SIZE         | Integer (optional) | batchSize                          |
++-------------------------------------+--------------------+------------------------------------+
+| QueryHints.ARROW_FORMAT_VERSION     | String (optional)  | formatVersion                      |
++-------------------------------------+--------------------+------------------------------------+
 
 .. warning::
 
@@ -360,6 +373,12 @@ ARROW_BATCH_SIZE
 This hint will restrict the number of features included in each Arrow record batch. An Arrow file contains
 a series of record batches -limiting the max size of each batch can allow memory-constrained systems to
 operate more easily.
+
+ARROW_FORMAT_VERSION
+^^^^^^^^^^^^^^^^^^^^
+
+This hint controls the IPC format version for Arrow binary encoding. It should be a valid Arrow format version,
+i.e. ``0.16`` or ``0.10``. The Arrow IPC format changed slightly starting with version ``0.15``.
 
 Example Query
 +++++++++++++

@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -11,14 +11,14 @@ package org.locationtech.geomesa.accumulo.filter
 import java.util.Date
 
 import com.typesafe.scalalogging.LazyLogging
-import com.vividsolutions.jts.geom.Coordinate
+import org.locationtech.jts.geom.Coordinate
 import org.geotools.data.Query
-import org.geotools.factory.Hints
+import org.geotools.util.factory.Hints
 import org.geotools.feature.simple.SimpleFeatureBuilder
 import org.geotools.filter.text.ecql.ECQL
 import org.geotools.geometry.jts.JTSFactoryFinder
 import org.junit.runner.RunWith
-import org.locationtech.geomesa.accumulo.TestWithDataStore
+import org.locationtech.geomesa.accumulo.TestWithFeatureType
 import org.locationtech.geomesa.accumulo.filter.TestFilters._
 import org.locationtech.geomesa.accumulo.iterators.TestData
 import org.locationtech.geomesa.features.ScalaSimpleFeature
@@ -32,7 +32,7 @@ import org.specs2.runner.JUnitRunner
 
 
 @RunWith(classOf[JUnitRunner])
-class FilterTest extends Specification with TestWithDataStore with LazyLogging {
+class FilterTest extends Specification with TestWithFeatureType with LazyLogging {
 
   override val spec = SimpleFeatureTypes.encodeType(TestData.featureType, includeUserData = true)
 
@@ -106,7 +106,7 @@ class FilterTest extends Specification with TestWithDataStore with LazyLogging {
 }
 
 @RunWith(classOf[JUnitRunner])
-class IdQueryTest extends Specification with TestWithDataStore {
+class IdQueryTest extends Specification with TestWithFeatureType {
 
   import org.locationtech.geomesa.filter.ff
 

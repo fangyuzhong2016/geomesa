@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -9,15 +9,22 @@
 package org.locationtech.geomesa.hbase.tools.export
 
 import com.beust.jcommander.Parameters
+import org.apache.hadoop.mapreduce.Job
+import org.geotools.data.Query
 import org.locationtech.geomesa.hbase.data.HBaseDataStore
-import org.locationtech.geomesa.hbase.tools.HBaseDataStoreCommand
+import org.locationtech.geomesa.hbase.jobs.{GeoMesaHBaseInputFormat, HBaseJobUtils}
 import org.locationtech.geomesa.hbase.tools.HBaseDataStoreCommand.{HBaseParams, ToggleRemoteFilterParam}
 import org.locationtech.geomesa.hbase.tools.export.HBaseExportCommand.HBaseExportParams
-import org.locationtech.geomesa.tools.export.{ExportCommand, ExportParams}
+import org.locationtech.geomesa.tools.export.ExportCommand
+import org.locationtech.geomesa.tools.export.ExportCommand.ExportParams
 import org.locationtech.geomesa.tools.{OptionalIndexParam, RequiredTypeNameParam}
 
-class HBaseExportCommand extends ExportCommand[HBaseDataStore] with HBaseDataStoreCommand {
+// defined as a trait to allow us to mixin hbase/bigtable distributed classpaths
+trait HBaseExportCommand extends ExportCommand[HBaseDataStore] {
   override val params = new HBaseExportParams
+
+  override protected def configure(job: Job, ds: HBaseDataStore, query: Query): Unit =
+    GeoMesaHBaseInputFormat.configure(job, HBaseJobUtils.getSingleScanPlan(ds, query))
 }
 
 object HBaseExportCommand {

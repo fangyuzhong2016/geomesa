@@ -90,6 +90,241 @@ Compatibility Matrix
 | Dependencies | N     | N     | Y     |
 +--------------+-------+-------+-------+
 
+Version 3.0.0 Upgrade Guide
++++++++++++++++++++++++++++
+
+Removal of Deprecated Modules and Classes
+-----------------------------------------
+
+GeoMesa 3.0.0 removes several lesser-used modules, as well as various obsolete classes and methods.
+
+The modules removed are: ``geomesa-accumulo/geomesa-accumulo-compute``,
+``geomesa-accumulo/geomesa-accumulo-native-api``, ``geomesa-accumulo/geomesa-accumulo-raster-distributed-runtime``,
+``geomesa-accumulo/geomesa-accumulo-raster``, ``geomesa-accumulo/geomesa-accumulo-security``,
+``geomesa-accumulo/geomesa-accumulo-stats-gs-plugin``, ``geomesa-convert/geomesa-convert-scripting``,
+``geomesa-convert/geomesa-convert-simplefeature``, ``geomesa-hbase/geomesa-hbase-native-api``,
+``geomesa-metrics``, ``geomesa-native-api``, ``geomesa-spark/geomesa-spark-geotools``, ``geomesa-blobstore/*``, and
+``geomesa-web/geomesa-web-data``.
+
+The classes and methods removed are detailed in `GEOMESA-2284 <https://geomesa.atlassian.net/browse/GEOMESA-2284>`_.
+
+HBase 2 Support
+---------------
+
+GeoMesa 3.0.0 supports both HBase 1.4 and HBase 2.2. HBase 1.3 is no longer supported. HBase 2.0 and 2.1 are
+not officially supported, but may work in some cases.
+
+There are now two separate modules for HBase filters and coprocessors - ``geomesa-hbase-distributed-runtime-hbase1``
+and ``geomesa-hbase-distributed-runtime-hbase2``. The previous ``geomesa-hbase-distributed-runtime`` module has
+been removed. Users should install the distributed runtime corresponding to their HBase installation.
+
+Similarly, there are now two separate modules for HBase Spark support - ``geomesa-hbase-spark-runtime-hbase1`` and
+``geomesa-hbase-spark-runtime-hbase2``. The previous ``geomesa-hbase-spark-runtime`` module has been removed.
+Users should use the Spark runtime corresponding to their HBase installation.
+
+Accumulo 2 Support
+------------------
+
+GeoMesa 3.0.0 supports both Accumulo 1.9 with Hadoop 2.8 and Accumulo 2.0 with Hadoop 3.
+Earlier versions of Accumulo are no longer supported, but may work in some cases.
+
+There are now two separate modules for Accumulo Spark support - ``geomesa-accumulo-spark-runtime-accumulo1`` and
+``geomesa-accumulo-spark-runtime-accumulo2``. The previous ``geomesa-accumulo-spark-runtime`` module has been removed.
+Users should use the Spark runtime corresponding to their Accumulo installation.
+
+NiFi Processors
+---------------
+
+The GeoMesa NiFi processors have been split out into separate nar files for each supported back-end database.
+Additionally, there are separate nar files for HBase 1.4/2.2 and Accumulo 1.9/2.0, respectively. The processor
+classes and configurations have also changed. See :ref:`nifi_bundle` for details.
+
+Dependency Updates
+------------------
+
+* Apache Arrow: 0.10 -> 0.16
+
+Apache Arrow Updates
+--------------------
+
+As part of the upgrade to Apache Arrow 0.16, the geomesa-arrow modules have been refactored to simplify memory
+management and allocation. Some classes have been removed, and some interfaces have changed. This may impact
+anyone using the geomesa-arrow modules directly.
+
+The Arrow IPC format changed in Arrow 0.15. Older clients may not be able to read Arrow-encoded results by
+default. To enabled the 'legacy' Arrow IPC format, set the system property ``geomesa.arrow.format.version``
+to ``0.10``, or use the query hint ``ARROW_FORMAT_VERSION``. See :ref:`arrow_encoding` for details.
+
+Converter Date Functions
+------------------------
+
+The converter functions ``isoDate`` and ``isoDateTime`` have been updated to match the equivalent Java
+``DateTimeFormatter`` pattern. ``isoDate`` has changed from ``yyyyMMdd`` to ``yyyy-MM-dd``, while ``isoDateTime``
+has changed from ``yyyyMMdd'T'HHmmss.SSSZ`` to ``yyyy-MM-dd'T'HH:mm:ss``. The old patterns can still be
+referenced through ``basicDate`` and ``basicDateTime``.
+
+AuthorizationsProvider and AuditProvider API Change
+---------------------------------------------------
+
+The signature for ``org.locationtech.geomesa.security.AuthorizationsProvider#configure`` and
+``org.locationtech.geomesa.utils.audit.AuditProvider#configure`` have changed slightly from
+``void configure(Map<String, Serializable> params)`` to
+``public void configure(Map<String, ? extends Serializable> params)``. Any classes implementing either of these
+interfaces will need to update their method signature. Any classes invoking these methods should not need to updated,
+as the new signature is compatible with the old one.
+
+Accumulo Default Visibilities Removed
+-------------------------------------
+
+The Accumulo data store parameter ``geomesa.security.visibilities`` have been removed. Visibilities should be set
+per-feature, as per :ref:`accumulo_visibilities`.
+
+Version 2.4.0 Upgrade Guide
++++++++++++++++++++++++++++
+
+GeoTools 21 and GeoServer 2.15
+------------------------------
+
+GeoMesa 2.4.0 is compiled against GeoTools 21.1 and GeoServer 2.15. This version of GeoTools contains package
+and class location changes to support Java 11. Due to the changes, GeoMesa will no longer work with older
+versions of GeoTools and GeoServer.
+
+.. warning::
+
+  GeoMesa 2.4.0 requires GeoTools 21.x and GeoServer 2.15.x.
+
+Configuration of Cached Statistics
+----------------------------------
+
+GeoMesa 2.4.0 moves the configuration of cached stats from a data store parameter (where it has to be set every time)
+to the feature type user data (where it is set once at schema creation, and only changed through explicit schema
+updates). See :ref:`stat_config` for more details.
+
+Feature types that were created in prior versions will continue to behave as before, with the configuration
+determined by the data store parameter each time. The configuration can be set permanently through
+the ``updateSchema`` data store method or the :ref:`cli_update_schema` CLI command.
+
+Indexing of Timestamp Attributes
+--------------------------------
+
+GeoMesa 2.4.0 fully supports indexing of ``java.sql.Timestamp`` attributes. In previous versions, timestamp
+attribute indices were not officially supported, however they did work in some cases. Any data that was written to
+a timestamp attribute index with an older version will no longer be readable by GeoMesa 2.4.0. To migrate old
+data, **truncate the index table** first, then re-write all existing records:
+
+.. code-block:: scala
+
+    import org.geotools.data.{DataStoreFinder, Query, Transaction}
+    import org.locationtech.geomesa.index.geotools.GeoMesaDataStore
+    import org.locationtech.geomesa.utils.geotools.FeatureUtils
+
+    val params: java.util.Map[String, String] = ??? // data store connection parameters
+    val ds: GeoMesaDataStore[_] = DataStoreFinder.getDataStore(params).asInstanceOf[GeoMesaDataStore[_]]
+    val typeName: String = ??? // simple feature type name to update
+    val timestamps: Seq[String] = ??? // names of any timestamp-type attributes
+    val indices = ds.manager.indices(ds.getSchema(typeName)).filter(_.attributes.headOption.exists(timestamps.contains))
+    val writer = ds.getIndexWriterAppend(typeName, indices)
+    val features = ds.getFeatureReader(new Query(typeName), Transaction.AUTO_COMMIT)
+    try {
+      while (features.hasNext) {
+        FeatureUtils.write(writer, features.next(), useProvidedFid = true)
+      }
+    } finally {
+      features.close()
+      writer.close()
+    }
+
+NiFi Processor Changes
+----------------------
+
+The GeoMesa NiFi processors have been refactored to support NiFi nar inheritance and as a first step towards supporting
+Java 11. Any existing processors will continue to work under the older version, as long as you don't delete the old
+GeoMesa nar file. However, you will need to create new processors in order to upgrade to 2.4.0.
+
+Distribution of Installation Bundles
+------------------------------------
+
+As of GeoMesa 2.4.0, installation bundles (binary distribution and GeoServer plugin tar files) will no
+longer be hosted on Maven Central. They will continue to be available on
+`GitHub <https://github.com/locationtech/geomesa/releases>`__ and the
+`Locationtech Maven Repository <https://repo.eclipse.org/content/groups/releases>`__. Note that this only
+applies to large installation bundles; GeoMesa will continue to publish JAR files to Maven Central.
+
+HBase GeoServer Plugin Installation
+-----------------------------------
+
+The GeoMesa HBase GeoServer plugin installation tar file has been updated to remove the shaded HBase client JARs.
+The appropriate client JARS for your HBase version now must be installed separately. See
+:ref:`install_hbase_geoserver` for details.
+
+If desired, the shaded GeoMesa JAR is still available from Maven, as
+``org.locationtech.geomesa:geomesa-hbase-gs-plugin_2.11`` with the classifier ``shaded``. However, this will likely
+be removed in the next major version release.
+
+Version 2.3.0 Upgrade Guide
++++++++++++++++++++++++++++
+
+Default Query Planning Type
+---------------------------
+
+GeoMesa 2.3.0 changes the default query planning type from stat-based to heuristic-based. This will only affect the
+Accumulo data store, as other stores have not implemented statistics. To enable stat-based query planning, refer
+to :ref:`query_planning_hint`.
+
+Immutable Simple Feature Types
+------------------------------
+
+GeoMesa 2.3.0 returns immutable objects from calls to ``getSchema``. This allows for the re-use of SimpleFeatureType
+instances, which reduces overhead. In most cases, this will have no effect on end users, however note that mutable
+and immutable feature types will never be ``equals`` when compared directly.
+
+In order to update a schema, or if mutability is desired for some other reason, call
+``org.locationtech.geomesa.utils.geotools.SimpleFeatureTypes.mutable()`` to create a mutable copy. Java users
+can call ``org.locationtech.geomesa.utils.interop.SimpleFeatureTypes.mutable()`` instead.
+
+FileSystem Storage API Changes
+------------------------------
+
+The FileSystem Storage API is still considered beta-level software, and has been updated in this release. The
+DataStore API has not changed, however the internal class interfaces have changed in this release, potentially
+requiring changes in user code.
+
+In addition, the format used to store metadata files has been updated, so older versions of GeoMesa will not be
+able to read metadata created with this version.
+
+Deprecated Modules
+------------------
+
+The following modules have been deprecated, and will be removed in a future version:
+
+* GeoMesa Raster
+* GeoMesa Native API
+* GeoMesa Blob Store
+* GeoMesa Metrics
+
+Version 2.2.0 Upgrade Guide
++++++++++++++++++++++++++++
+
+GeoTools 20 and GeoServer 2.14
+------------------------------
+
+GeoMesa 2.2.0 is compiled against GeoTools 20.0 and GeoServer 2.14. This version of GeoTools upgrades JTS
+from 1.14 to 1.16, which includes a transition of the project to Locationtech. The new version
+of JTS renames the packages from ``com.vividsolutions`` to ``org.locationtech.jts``. Due to the package renaming,
+GeoMesa will no longer work with older versions of GeoTools and GeoServer.
+
+.. warning::
+
+  GeoMesa 2.2.0 requires GeoTools 20.x and GeoServer 2.14.x.
+
+Accumulo DataStore GeoServer Installation
+-----------------------------------------
+
+When using GeoServer, the GeoMesa Accumulo data store now requires Accumulo client JARs 1.9.2 or later.
+This is due to classpath conflicts between earlier Accumulo clients and GeoServer 2.14. Fortunately, newer Accumulo
+clients can talk to older Accumulo instances, so it is only necessary to upgrade the client JARs in GeoServer,
+but not the entire Accumulo cluster.
+
 Version 2.1.0 Upgrade Guide
 +++++++++++++++++++++++++++
 

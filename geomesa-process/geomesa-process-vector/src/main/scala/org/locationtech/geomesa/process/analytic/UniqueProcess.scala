@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -17,8 +17,11 @@ import org.geotools.feature.visitor.{AbstractCalcResult, CalcResult}
 import org.geotools.process.factory.{DescribeParameter, DescribeProcess, DescribeResult}
 import org.locationtech.geomesa.filter.factory.FastFilterFactory
 import org.locationtech.geomesa.index.conf.QueryHints
+import org.locationtech.geomesa.index.geotools.GeoMesaFeatureCollection
+import org.locationtech.geomesa.index.index.attribute.AttributeIndex
 import org.locationtech.geomesa.index.iterators.StatsScan
-import org.locationtech.geomesa.process.{GeoMesaProcess, GeoMesaProcessVisitor}
+import org.locationtech.geomesa.index.process.GeoMesaProcessVisitor
+import org.locationtech.geomesa.process.GeoMesaProcess
 import org.locationtech.geomesa.utils.collection.SelfClosingIterator
 import org.locationtech.geomesa.utils.geotools.RichAttributeDescriptors.RichAttributeDescriptor
 import org.locationtech.geomesa.utils.stats.{EnumerationStat, Stat}
@@ -63,7 +66,7 @@ class UniqueProcess extends GeoMesaProcess with LazyLogging {
     val sortBy = Option(sortByCount).exists(_.booleanValue)
 
     val visitor = new AttributeVisitor(features, attributeDescriptor, Option(filter).filter(_ != Filter.INCLUDE), hist)
-    features.accepts(visitor, progressListener)
+    GeoMesaFeatureCollection.visit(features, visitor, progressListener)
     val uniqueValues = visitor.getResult.attributes
 
     val binding = attributeDescriptor.getType.getBinding
@@ -158,8 +161,6 @@ class AttributeVisitor(val features: SimpleFeatureCollection,
                        val filter: Option[Filter],
                        histogram: Boolean) extends GeoMesaProcessVisitor with LazyLogging {
 
-  import org.locationtech.geomesa.utils.geotools.Conversions._
-
   import scala.collection.JavaConversions._
 
   private val attribute    = attributeDescriptor.getLocalName
@@ -170,11 +171,11 @@ class AttributeVisitor(val features: SimpleFeatureCollection,
   // normally handled in our query planner, but we are going to use the filter directly here
   private lazy val manualFilter = filter.map(FastFilterFactory.optimize(features.getSchema, _))
 
-  private def getAttribute[T](f: SimpleFeature) = {
+  private def getAttribute[T](f: SimpleFeature): T = {
     if (attributeIdx == -1) {
       attributeIdx = f.getType.indexOf(attribute)
     }
-    f.get[T](attributeIdx)
+    f.getAttribute(attributeIdx).asInstanceOf[T]
   }
 
   private def addSingularValue(f: SimpleFeature): Unit = {
@@ -191,8 +192,8 @@ class AttributeVisitor(val features: SimpleFeatureCollection,
     }
   }
 
-  private val addValue: (SimpleFeature) => Unit =
-    if (attributeDescriptor.isList) addMultiValue else addSingularValue
+  private val addValue: SimpleFeature => Unit =
+    if (attributeDescriptor.isList) { addMultiValue } else { addSingularValue }
 
   // non-optimized visit
   override def visit(feature: Feature): Unit = {
@@ -246,7 +247,7 @@ class AttributeVisitor(val features: SimpleFeatureCollection,
     query.setPropertyNames(Seq(attribute).asJava)
 
     // if there is no filter, try to force an attribute scan - should be fastest query
-    if (query.getFilter == Filter.INCLUDE && features.getSchema.getDescriptor(attribute).isIndexed) {
+    if (query.getFilter == Filter.INCLUDE && AttributeIndex.indexed(features.getSchema, attribute)) {
       query.setFilter(AttributeVisitor.getIncludeAttributeFilter(attribute))
     }
 

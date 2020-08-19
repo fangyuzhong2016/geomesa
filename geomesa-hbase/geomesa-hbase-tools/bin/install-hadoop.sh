@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #
-# Copyright (c) 2013-2016 Commonwealth Computer Research, Inc.
+# Copyright (c) 2013-%%copyright.year%% Commonwealth Computer Research, Inc.
 # All rights reserved. This program and the accompanying materials
 # are made available under the terms of the Apache License, Version 2.0 which
 # accompanies this distribution and is available at
@@ -43,6 +43,8 @@ declare -a urls=(
   "${base_url}org/apache/hadoop/hadoop-client/${hadoop_version}/hadoop-client-${hadoop_version}.jar"
   "${base_url}org/apache/hadoop/hadoop-common/${hadoop_version}/hadoop-common-${hadoop_version}.jar"
   "${base_url}org/apache/hadoop/hadoop-hdfs/${hadoop_version}/hadoop-hdfs-${hadoop_version}.jar"
+  "${base_url}org/apache/hadoop/hadoop-hdfs-client/${hadoop_version}/hadoop-hdfs-client-${hadoop_version}.jar"
+  "${base_url}org/apache/hadoop/hadoop-mapreduce-client-core/${hadoop_version}/hadoop-mapreduce-client-core-${hadoop_version}.jar"
   "${base_url}commons-logging/commons-logging/${com_log_version}/commons-logging-${com_log_version}.jar"
   "${base_url}commons-cli/commons-cli/1.2/commons-cli-1.2.jar"
   "${base_url}commons-io/commons-io/2.5/commons-io-2.5.jar"
@@ -52,6 +54,15 @@ declare -a urls=(
   "${base_url}com/yammer/metrics/metrics-core/2.2.0/metrics-core-2.2.0.jar"
 )
 
+zk_maj_ver="$(expr match "$zookeeper_version" '\([0-9][0-9]*\)\.')"
+zk_min_ver="$(expr match "$zookeeper_version" '[0-9][0-9]*\.\([0-9][0-9]*\)')"
+zk_bug_ver="$(expr match "$zookeeper_version" '[0-9][0-9]*\.[0-9][0-9]*\.\([0-9][0-9]*\)')"
+
+# compare the version of zookeeper to determine if we need zookeeper-jute (version >= 3.5.5)
+if [[ "$zk_maj_ver" -ge 3 && "$zk_min_ver" -ge 5 && "$zk_bug_ver" -ge 5 ]]; then
+  urls+=("${base_url}org/apache/zookeeper/zookeeper-jute/$zookeeper_version/zookeeper-jute-$zookeeper_version.jar")
+fi
+
 # compare the first digit of htrace core version to determine the artifact name
 if [[ "${htrace_core_version%%.*}" -lt 4 ]]; then
   urls+=("${base_url}org/apache/htrace/htrace-core/${htrace_core_version}/htrace-core-${htrace_core_version}.jar")
@@ -60,8 +71,9 @@ else
 fi
 
 # if there's already a guava jar (e.g. geoserver) don't install guava to avoid conflicts
-if [ -z "$(find $install_dir -maxdepth 1 -name 'guava-*' -print -quit)" ]; then
+if [ -z "$(find -L $install_dir -maxdepth 1 -name 'guava-*' -print -quit)" ]; then
   urls+=("${base_url}com/google/guava/guava/${guava_version}/guava-${guava_version}.jar")
 fi
 
 downloadUrls "$install_dir" urls[@]
+

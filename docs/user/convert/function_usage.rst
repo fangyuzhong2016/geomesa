@@ -27,6 +27,17 @@ Example: ``withDefault('foo', 'bar') = foo``
 
 Example: ``withDefault(null, 'bar') = bar``
 
+require
+^^^^^^^
+
+Description: Throw an exception if the value is null, otherwise return the value
+
+Usage: ``require($1)``
+
+Example: ``require('foo') = foo``
+
+Example: ``require(null) // throws an error``
+
 String Functions
 ~~~~~~~~~~~~~~~~
 
@@ -203,13 +214,15 @@ for parsing intervals since the Java epoch. See below for full descriptions of e
 Function                   Format                          Example
 ========================== =============================== ========================
 basicIsoDate               ``yyyyMMdd``                    20150101
-basicDateTime              ``yyyyMMdd'T'HHmmss.SSSZ``      20150101T000000.000Z
-basicDateTimeNoMillis      ``yyyyMMdd'T'HHmmssZ``          20150101T000000Z
-dateTime                   ``yyyy-MM-dd'T'HH:mm:ss.SSSZZ`` 2015-01-01T00:00:00.000Z
-dateHourMinuteSecondMillis ``yyyy-MM-dd'T'HH:mm:ss.SSS``   2015-01-01T00:00:00.000
+isoDate                    ``yyyy-MM-dd``                  2015-01-01
 isoLocalDate               ``yyyy-MM-dd``                  2015-01-01
-isoLocalDateTime           ``yyyy-MM-dd'T'HH:mm:ss``       2015-01-01
+basicDateTimeNoMillis      ``yyyyMMdd'T'HHmmssZ``          20150101T000000Z
+basicDateTime              ``yyyyMMdd'T'HHmmss.SSSZ``      20150101T000000.000Z
+isoDateTime                ``yyyy-MM-dd'T'HH:mm:ss``       2015-01-01T00:00:00
+isoLocalDateTime           ``yyyy-MM-dd'T'HH:mm:ss``       2015-01-01T00:00:00
 isoOffsetDateTime          ``yyyy-MM-dd'T'HH:mm:ssZ``      2015-01-01T00:00:00Z
+dateHourMinuteSecondMillis ``yyyy-MM-dd'T'HH:mm:ss.SSS``   2015-01-01T00:00:00.000
+dateTime                   ``yyyy-MM-dd'T'HH:mm:ss.SSSZ``  2015-01-01T00:00:00.000Z
 ========================== =============================== ========================
 
 now
@@ -239,6 +252,15 @@ Description: A date format for ``yyyyMMdd``, equivalent to java.time.format.Date
 Usage: ``basicIsoDate($1)``
 
 Example: ``basicIsoDate('20150101')``
+
+isoDate
+^^^^^^^
+
+Description: A date format for ``yyyy-MM-dd``, equivalent to java.time.format.DateTimeFormatter.ISO_DATE.
+
+Usage: ``isoDate($1)``
+
+Example: ``isoDate('2015-01-01')``
 
 basicDateTime
 ^^^^^^^^^^^^^
@@ -278,6 +300,16 @@ fractional seconds for format ``yyyy-MM-dd'T'HH:mm:ss.SSS``.
 Usage: ``dateHourMinuteSecondMillis($1)``
 
 Example: ``dateHourMinuteSecondMillis('2015-01-01T00:00:00.000')``
+
+isoDateTime
+^^^^^^^^^^^
+
+Description: A date format for ``yyyy-MM-dd'T'HH:mm:ss``, equivalent to
+java.time.format.DateTimeFormatter.ISO_DATE_TIME.
+
+Usage: ``isoDateTime($1)``
+
+Example: ``isoDateTime('2015-01-01T00:00:00')``
 
 isoLocalDate
 ^^^^^^^^^^^^
@@ -326,6 +358,16 @@ January 1, 1970.
 Usage: ``secsToDate($1)``
 
 Example: ``secsToDate(1449675054)``
+
+dateToString
+^^^^^^^^^^^^
+
+Description: Formats a date as a string, based on a pattern as defined by Java's
+`DateTimeFormatter <https://docs.oracle.com/javase/8/docs/api/java/time/format/DateTimeFormatter.html>`__.
+
+Usage: ``dateToString($pattern, $date)``
+
+Example: ``dateToString('yyyy-MM-dd\\'T\\'HH:mm:ss.SSSSSS', now())``
 
 Geometry Functions
 ~~~~~~~~~~~~~~~~~~
@@ -658,6 +700,18 @@ Example: ``stringToBoolean('true', false) = true``
 
 Example: ``stringToBoolean('55', false) = false``
 
+intToBoolean
+^^^^^^^^^^^^
+
+Description: Converts an int to boolean. Follows the normal rules of conversion, where 0 is false and all other ints
+are true.
+
+Usage: ``intToBoolean($1)``
+
+Example: ``intToBoolean(1) = true``
+
+Example: ``intToBoolean(0) = false``
+
 Math Functions
 ~~~~~~~~~~~~~~
 
@@ -781,6 +835,8 @@ And a transform to parse the quoted CSV field:
 
     { name = "friends", transform = "parseList('string', $5)" }
 
+.. _converter_parse_map_fn:
+
 parseMap
 ^^^^^^^^
 
@@ -814,6 +870,31 @@ delimiters for a map:
 
     { name = "numbers", transform = "parseMap('int -> string', $2, '->', ',')" }
 
+State Functions
+~~~~~~~~~~~~~~~
+
+inputFilePath
+^^^^^^^^^^^^^
+
+Description: provides the absolute path to the file being operated on, if available
+
+Example: ``$inputFilePath``
+
+The file path is a variable, referenced through ``$`` notation.
+
+The file path may not always be available, depending on how the converter is being invoked.
+When invoked through the GeoMesa command-line tools or GeoMesa NiFi, it will be set appropriately.
+
+lineNo
+^^^^^^
+
+Description: provides the current line number in the file being operated on, if available
+
+Example: ``lineNo()``
+
+The line number may not always be available, depending on the converter being used. For some converters,
+line number may be an abstract concept. For example, in the Avro converter line number will refer to the
+number of the Avro record in the file.
 
 Enrichment Functions
 ~~~~~~~~~~~~~~~~~~~~

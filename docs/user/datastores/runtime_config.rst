@@ -28,6 +28,12 @@ Common Properties
 These properties apply to all GeoMesa implementations. Additional properties for different back-end
 databases can be found in the chapters for each one.
 
+geomesa.arrow.format.version
+++++++++++++++++++++++++++++
+
+Sets the IPC format version for Arrow-encoded responses. This is expected to be a valid Arrow version,
+i.e. ``0.16`` or ``0.10``. The Arrow IPC format changed slightly starting with version ``0.15``.
+
 geomesa.audit.provider.impl
 +++++++++++++++++++++++++++
 
@@ -45,6 +51,22 @@ geomesa.convert.scripts.path
 
 This property allows for adding files to the classpath. It should be set to a colon-separated list of file
 paths. This is useful for getting scripts onto the classpath for use by map-reduce ingest jobs.
+
+geomesa.density.batch.size
+++++++++++++++++++++++++++
+
+This property controls the batch size used for running distributed density (heatmap) queries. It needs to be set on
+each region or tablet server. If a query is closed or cancelled before completion, the batch size will determine how
+long the distributed scan will keep running before seeing the cancellation.
+
+geomesa.distributed.lock.timeout
+++++++++++++++++++++++++++++++++
+
+The property controls the length of time a data store will wait to acquire a distributed lock before performing
+schema operations (``createSchema``, ``updateSchema`` and ``removeSchema``). As GeoMesa is often run in parallel,
+acquiring a distributed lock among different processes prevents metadata corruption that may result from multiple
+threads altering the schema simultaneously. The timeout is specified as a duration, e.g. ``1 minute`` or
+``30 seconds``, with a default value of ``2 minutes``.
 
 geomesa.distributed.version.check
 +++++++++++++++++++++++++++++++++
@@ -78,6 +100,16 @@ comparison. This property controls the threshold for switching to a hash lookup.
 Note that for datastores with distributed filtering (e.g. HBase and Accumulo), this property needs to be set
 on the distributed processing nodes.
 
+geomesa.filter.remote.cache.expiry
+++++++++++++++++++++++++++++++++++
+
+This property controls how long query filters will be cached in memory in remote processes (i.e. HBase region servers
+and Accumulo tablet servers). For repeated queries, caching the filter can improve query times. However, complex
+filters can require a substantial amount of memory overhead. The expiry is specified as a duration, e.g.
+``10 minutes`` or ``1 hour``. The default is ``10 minutes``.
+
+Note that to take effect, the property must be set on each region or tablet server.
+
 geomesa.force.count
 +++++++++++++++++++
 
@@ -87,6 +119,46 @@ rough estimate very quickly. Some applications rely on knowing the exact size of
 front, so estimates will cause problems. To force GeoMesa to calculate the exact size of a result
 set, you may set this property to ``true``. You may also override this behavior on a per-query basis
 by using the query hint ``org.locationtech.geomesa.accumulo.index.QueryHints.EXACT_COUNT``.
+
+geomesa.geometry.processing
++++++++++++++++++++++++++++
+
+This property controls how query geometries will be handled with respect to the anti-meridian. Acceptable values are
+one of ``spatial4j`` or ``none``. ``spatial4j`` (the default) will use the Spatial4J library, which will interpret a
+geometry with a segment spanning more than 180 degrees of longitude as being inverted around the anti-meridian. To
+prevent a geometry from being inverted, add way-points every 180 degrees. ``none`` will interpret geometries
+literally. In this case, to query around the anti-meridian, use an OR filter or a geometry collection.
+
+As an example, the following filters both specify a 2-degree area around the anti-meridian:
+
+.. code-block:: java
+
+  // spatial4j processing
+  "intersects(geom, 'POLYGON((-179 90, 179 90, 179 -90, -179 -90, -179 90))')"
+  // no processing
+  "intersects(geom, 'MULTIPOLYGON(((-179 90, -180 90, -180 -90, -179 -90, -179 90)),((179 90, 180 90, 180 -90, 179 -90, 179 90)))')"
+
+While the following filters both specify a 358-degree globe-spanning polygon:
+
+.. code-block:: java
+
+  // spatial4j processing
+  "intersects(geom, 'POLYGON((-179 90, 0 90, 179 90, 179 -90, 0 -90, -179 -90, -179 90))')"
+  // no processing
+  "intersects(geom, 'POLYGON((-179 90, 179 90, 179 -90, -179 -90, -179 90))')"
+
+geomesa.ilike.max.length
+++++++++++++++++++++++++
+
+Controls the max length of an ``ilike`` predicate that will be parsed by GeoMesa for attribute index queries.
+Case-insensitive matches must be enumerated for each possible case, which will result in exponentially
+increasing query ranges. The default value is ``10``, which will result in 1024 ranges.
+
+geomesa.ingest.local.batch.size
++++++++++++++++++++++++++++++++
+
+Controls the batch size for local ingests via the command-line tools. By default, feature writers will be
+flushed every 20,000 features.
 
 geomesa.metadata.expiry
 +++++++++++++++++++++++
@@ -105,10 +177,10 @@ for details on partitioning.
 geomesa.query.cost.type
 +++++++++++++++++++++++
 
-This property controls how GeoMesa performs query planning. By default, GeoMesa will perform cost-based
-query planning using data statistics to determine the best index for a given query. As a fallback option,
-this property may be set to ``index`` to use heuristic-based query planning. This may also be overridden on a
-per-query basis using the query hint ``org.locationtech.geomesa.accumulo.index.QueryHints.COST_EVALUATION_KEY``
+This property controls how GeoMesa performs query planning. By default, GeoMesa uses heuristics to determine the
+best index for a given query. Alternatively, this property may be set to ``stats`` to use cached data statistics
+and cost-based query planning. This may also be overridden on a per-query basis using the query hint
+``org.locationtech.geomesa.accumulo.index.QueryHints.COST_EVALUATION_KEY``
 set to either ``org.locationtech.geomesa.accumulo.index.QueryPlanner.CostEvaluation.Stats``
 or ``org.locationtech.geomesa.accumulo.index.QueryPlanner.CostEvaluation.Index``. See :ref:`query_planning`
 for more details on query planning strategies.
@@ -152,6 +224,13 @@ For more granularity, it is also possible to specify the full-table scan behavio
 replaced with the schema name (e.g. "gdelt"). Properties set for an individual schema will take precedence
 over the globally-defined behavior.
 
+geomesa.scan.block-full-table.threshold
++++++++++++++++++++++++++++++++++++++++
+
+This property works in conjunction with ``geomesa.scan.block-full-table``, above. If a query puts a reasonable limit
+on the number of features that are returned (through the use of ``maxFeatures``), then it will not be blocked.
+The property is specified as an integer. By default, a limit of 1000 or less is allowed.
+
 geomesa.scan.ranges.target
 ++++++++++++++++++++++++++
 
@@ -160,20 +239,48 @@ query. It is specified as a number. In general, more ranges will result in fewer
 scanned, which will speed up most queries. However, too many ranges can take a long time to generate, and
 overwhelm clients, causing slowdowns. The optimal value depends on the environment.
 
+geomesa.serializer.cache.expiry
++++++++++++++++++++++++++++++++
+
+This property controls how long simple feature serializers will be cached in memory. Lowering this value may
+reduce the memory footprint of your application, at the cost of increased processing time. The expiry is specified
+as a duration, e.g. ``10 minutes`` or ``1 hour``. The default is ``1 hour``.
+
+geomesa.sort.memory.threshold
++++++++++++++++++++++++++++++
+
+This property can be used to constrain the memory used to sort result sets. GeoMesa sorts results in the client
+process memory, since the supported back-end databases don't offer native ordering. To avoid having large
+result sets exceed the client memory capacity, a memory threshold can be set. Once the size of a result set
+exceeds this threshold, additional results will be written to disk and sorted there. Note that the actual memory
+used may exceed the threshold, as the memory footprint calculation is an estimation. The threshold is specified
+as a number of bytes, e.g. ``10MB`` or ``1GB``. The default is to always sort in memory.
+
+Note that distributed Arrow queries will never use disk to sort, due to the nature of Arrow result batches. For
+supported back-ends, sorting on disk for Arrow queries can be achieved by disabling remote Arrow processing.
+
 geomesa.sft.config.urls
 +++++++++++++++++++++++
 
 This property allows for adding GeoMesa simple feature type configurations to the environment. It can be set to
 a comma-separated list of arbitrary URLs. For more information on defining types, see :ref:`cli_sft_conf`.
 
+geomesa.stats.batch.size
+++++++++++++++++++++++++
+
+This property controls the batch size used for running distributed stat queries. It needs to be set on each
+region or tablet server. If a query is closed or cancelled before completion, the batch size will determine how
+long the distributed scan will keep running before seeing the cancellation.
+
 .. _stats_generate_config:
 
 geomesa.stats.generate
 ++++++++++++++++++++++
 
-This property controls whether GeoMesa will generate statistics during ingestion. It is specified as a Boolean,
-``true`` or ``false``. This property will be used if a data store is not explicitly configured using the
-``geomesa.stats.enable`` data store parameter.
+This property controls whether GeoMesa will generate statistics for a given feature type during ingestion. It
+is specified as a Boolean, ``true`` or ``false``. This property will be used when a feature type is first created,
+if stats are not explicitly configured in the feature type user data or through the ``geomesa.stats.enable``
+data store parameter. See :ref:`stat_config` for details on configuring the feature type.
 
 geomesa.strategy.decider
 ++++++++++++++++++++++++

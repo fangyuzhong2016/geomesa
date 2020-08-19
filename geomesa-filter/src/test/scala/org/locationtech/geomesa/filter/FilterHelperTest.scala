@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -18,8 +18,10 @@ import org.geotools.util.Converters
 import org.junit.runner.RunWith
 import org.locationtech.geomesa.filter.Bounds.Bound
 import org.locationtech.geomesa.filter.visitor.QueryPlanFilterVisitor
+import org.locationtech.geomesa.utils.date.DateUtils.toInstant
 import org.locationtech.geomesa.utils.geotools.SimpleFeatureTypes
 import org.opengis.filter._
+import org.specs2.matcher.MatchResult
 import org.specs2.mutable.Specification
 import org.specs2.runner.JUnitRunner
 
@@ -32,8 +34,8 @@ class FilterHelperTest extends Specification {
   def updateFilter(filter: Filter): Filter = QueryPlanFilterVisitor.apply(sft, filter)
 
   def toInterval(dt1: String, dt2: String, inclusive: Boolean = true): Bounds[ZonedDateTime] = {
-    val s = Option(Converters.convert(dt1, classOf[Date])).map(d => ZonedDateTime.ofInstant(d.toInstant, ZoneOffset.UTC))
-    val e = Option(Converters.convert(dt2, classOf[Date])).map(d => ZonedDateTime.ofInstant(d.toInstant, ZoneOffset.UTC))
+    val s = Option(Converters.convert(dt1, classOf[Date])).map(d => ZonedDateTime.ofInstant(toInstant(d), ZoneOffset.UTC))
+    val e = Option(Converters.convert(dt2, classOf[Date])).map(d => ZonedDateTime.ofInstant(toInstant(d), ZoneOffset.UTC))
     Bounds(Bound(s, if (s.isDefined) inclusive else false), Bound(e, if (e.isDefined) inclusive else false))
   }
 
@@ -66,13 +68,13 @@ class FilterHelperTest extends Specification {
     }
 
     "fix out of bounds bbox" >> {
-      val filter = ff.bbox(ff.property("geom"), -181, -91, 181, 91, "4326")
+      val filter = ECQL.toFilter("bbox(geom,-181,-91,181,91)")
       val updated = updateFilter(filter)
       updated mustEqual Filter.INCLUDE
     }
 
     "be idempotent with bbox" >> {
-      val filter = ff.bbox(ff.property("geom"), -181, -91, 181, 91, "4326")
+      val filter = ECQL.toFilter("bbox(geom,-181,-91,181,91)")
       val updated = updateFilter(filter)
       val reupdated = updateFilter(updated)
       ECQL.toCQL(updated) mustEqual ECQL.toCQL(reupdated)
@@ -191,6 +193,33 @@ class FilterHelperTest extends Specification {
         val filter = ECQL.toFilter(cql)
         val intervals = FilterHelper.extractIntervals(filter, "dtg", handleExclusiveBounds = true)
         intervals mustEqual FilterValues(Seq(toInterval(null, "2016-01-01T00:00:00.000Z")))
+      }
+    }
+
+    "extract bounds from case-insensitive matches" >> {
+      def matcher(f: String, expected: Seq[String], rel: Option[String] => Option[String]): MatchResult[Any] = {
+        val res = FilterHelper.extractAttributeBounds(ECQL.toFilter(f), "name", classOf[String])
+        forall(res.values)(b => rel(b.lower.value) mustEqual b.upper.value)
+        res.values.map(_.lower.value.orNull) must containTheSameElementsAs(expected)
+      }
+      def literal(f: String, expected: Seq[String]): MatchResult[Any] = matcher(f, expected, o => o)
+      def wildcard(f: String, expected: Seq[String]): MatchResult[Any] =
+        matcher(f, expected, o => o.map(_ + WildcardSuffix))
+
+      literal("name ilike 'foo'", Seq("foo", "Foo", "fOo", "foO", "fOO", "FoO", "FOo", "FOO"))
+      wildcard("name ilike 'foo%'", Seq("foo", "Foo", "fOo", "foO", "fOO", "FoO", "FOo", "FOO"))
+      literal("name ilike 'f2o'", Seq("f2o", "F2o", "f2O", "F2O"))
+      wildcard("name ilike 'f2o%'", Seq("f2o", "F2o", "f2O", "F2O"))
+      // test max expansion limit of 10 chars
+      literal("name ilike 'fooooooooooo'", Seq.empty)
+      wildcard("name ilike 'fooooooooooo%'", Seq.empty)
+      // test setting sys prop for max expansion limit
+      FilterProperties.CaseInsensitiveLimit.threadLocalValue.set("2")
+      try {
+        literal("name ilike 'foo'", Seq.empty)
+        wildcard("name ilike 'foo%'", Seq.empty)
+      } finally {
+        FilterProperties.CaseInsensitiveLimit.threadLocalValue.remove()
       }
     }
 

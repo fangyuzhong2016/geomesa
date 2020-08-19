@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -13,13 +13,14 @@ import org.geotools.data.Query
 import org.geotools.data.collection.ListFeatureCollection
 import org.geotools.data.simple.{SimpleFeatureCollection, SimpleFeatureSource}
 import org.geotools.process.factory.{DescribeParameter, DescribeProcess, DescribeResult}
-import org.geotools.util.NullProgressListener
 import org.locationtech.geomesa.features.{ScalaSimpleFeature, TransformSimpleFeature}
 import org.locationtech.geomesa.index.conf.QueryHints
+import org.locationtech.geomesa.index.geotools.GeoMesaFeatureCollection
 import org.locationtech.geomesa.index.iterators.StatsScan
-import org.locationtech.geomesa.index.planning.QueryPlanner
-import org.locationtech.geomesa.process.{FeatureResult, GeoMesaProcess, GeoMesaProcessVisitor}
+import org.locationtech.geomesa.index.process.GeoMesaProcessVisitor
+import org.locationtech.geomesa.process.{FeatureResult, GeoMesaProcess}
 import org.locationtech.geomesa.utils.geotools.GeometryUtils
+import org.locationtech.geomesa.utils.geotools.Transform.Transforms
 import org.locationtech.geomesa.utils.stats.Stat
 import org.opengis.feature.Feature
 import org.opengis.feature.simple.SimpleFeature
@@ -63,8 +64,7 @@ class StatsProcess extends GeoMesaProcess with LazyLogging {
     val propsArray = Option(properties).map(_.toArray(Array.empty[String])).filter(_.length > 0).orNull
 
     val visitor = new StatsVisitor(features, statString, Option(encode).exists(_.booleanValue()), propsArray)
-
-    features.accepts(visitor, new NullProgressListener)
+    GeoMesaFeatureCollection.visit(features, visitor)
     visitor.getResult.results
   }
 }
@@ -74,10 +74,11 @@ class StatsVisitor(features: SimpleFeatureCollection, statString: String, encode
 
   private val origSft = features.getSchema
 
-  private lazy val (transforms, transformSFT) = QueryPlanner.buildTransformSFT(origSft, properties)
-  private lazy val transformSF: TransformSimpleFeature = TransformSimpleFeature(origSft, transformSFT, transforms)
+  private lazy val transformDefinitions = Transforms(origSft, properties)
+  private lazy val transformSft = Transforms.schema(origSft, transformDefinitions)
+  private lazy val transformSf = TransformSimpleFeature(transformSft, transformDefinitions)
 
-  private lazy val statSft = if (properties == null) { origSft } else { transformSFT }
+  private lazy val statSft = if (properties == null) { origSft } else { transformSft }
 
   private lazy val stat: Stat = Stat(statSft, statString)
 
@@ -88,8 +89,8 @@ class StatsVisitor(features: SimpleFeatureCollection, statString: String, encode
     val sf = feature.asInstanceOf[SimpleFeature]
     if (properties != null) {
       // There are transforms!
-      transformSF.setFeature(sf)
-      stat.observe(transformSF)
+      transformSf.setFeature(sf)
+      stat.observe(transformSf)
     } else {
       stat.observe(sf)
     }

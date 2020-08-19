@@ -6,11 +6,30 @@ in GeoMesa data stores is to use `GeoServer`_,
 an open source server for sharing geospatial data. This chapter describes
 how to work with the GeoMesa GeoServer plugins.
 
+.. _geoserver_versions:
+
+GeoServer Versions
+------------------
+
+Not all versions of GeoServer are compatible with all versions of GeoMesa. Refer to the chart below for which
+version to install. It is recommended to use the latest GeoServer bug-fix release for the compatible minor version.
+
++-------------------+-------------------+
+| GeoMesa Version   | GeoServer Version |
++===================+===================+
+| 2.1.x and earlier | 2.12.x            |
++-------------------+-------------------+
+| 2.2.x and 2.3.x   | 2.14.x            |
++-------------------+-------------------+
+| 2.4.x             | 2.15.x            |
++-------------------+-------------------+
+| 3.0.x             | 2.15.x-2.17.x     |
++-------------------+-------------------+
+
 .. warning::
 
-   GeoServer 2.13.0 and 2.13.1 are not recommended due to two serious bugs:
-     * GeoMesa WPS processes are not triggered correctly, and will run slowly or not at all
-     * GeoMesa count optimizations are bypassed, potentially resulting in large duplicate scans for WFS queries
+    GeoMesa will not work with an incompatible version of GeoServer. Ensure that your install the correct
+    version according to the chart above.
 
 Installation
 ------------
@@ -130,6 +149,16 @@ For massive queries, the standard 60 second timeout may be too short.
 
 .. |"Disable limits"| image:: _static/img/wms_limits.png
 
+Temp Directories
+^^^^^^^^^^^^^^^^
+
+GeoServer creates temporary directories for caching various files. Running in a multi-tenant environment
+can result in permission errors when different users try to write to the same directories. To avoid this,
+configure your application server with the following system properties::
+
+  -DEPSG-HSQL.directory=/tmp/$USER-hsql
+  -DGEOWEBCACHE_CACHE_DIR=/tmp/$USER-gwc
+
 .. _geoserver_explain_query:
 
 Logging Explain Query Planning
@@ -181,7 +210,7 @@ Due to licensing, GeoServer-specific code related to GeoMesa is maintained in a 
 `repository <https://github.com/geomesa/geomesa-geoserver/>`__. It can be downloaded from Maven
 central, or built from source.
 
-It is required for Arrow output and raster stores in GeoServer, among other things.
+It is required for Arrow output in GeoServer, among other things.
 
 Once obtained, the GeoServer modules can be installed by copying ``geomesa-gs-*.jar`` into
 the GeoServer ``lib`` directory.

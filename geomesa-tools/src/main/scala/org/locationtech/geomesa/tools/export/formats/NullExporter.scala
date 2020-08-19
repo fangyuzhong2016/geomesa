@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -19,6 +19,8 @@ object NullExporter extends FeatureExporter {
     features.foreach(_ => count += 1)
     Some(count)
   }
+
+  override def bytes: Long = 0L
 
   override def close(): Unit = {}
 }

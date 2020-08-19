@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -17,7 +17,7 @@ import org.apache.arrow.vector.DirtyRootAllocator
 import org.geotools.data.{DataStoreFinder, Query, Transaction}
 import org.geotools.filter.text.ecql.ECQL
 import org.junit.runner.RunWith
-import org.locationtech.geomesa.arrow.io.SimpleFeatureArrowFileWriter
+import org.locationtech.geomesa.arrow.io.{FormatVersion, SimpleFeatureArrowFileWriter}
 import org.locationtech.geomesa.arrow.vector.ArrowDictionary
 import org.locationtech.geomesa.arrow.vector.SimpleFeatureVector.SimpleFeatureEncoding
 import org.locationtech.geomesa.features.ScalaSimpleFeature
@@ -32,11 +32,14 @@ import org.specs2.runner.JUnitRunner
 class ArrowDataStoreTest extends Specification {
 
   import ArrowDataStoreFactory.{CachingParam, UrlParam}
+
   import scala.collection.JavaConversions._
 
   implicit val allocator: BufferAllocator = new DirtyRootAllocator(Long.MaxValue, 6.toByte)
 
-  val sft = SimpleFeatureTypes.createType("test", "name:String,foo:String,dtg:Date,*geom:Point:srid=4326")
+  val ipcOpts = FormatVersion.options(FormatVersion.LatestVersion)
+
+  val sft = SimpleFeatureTypes.createImmutableType("test", "name:String,foo:String,dtg:Date,*geom:Point:srid=4326")
 
   val features0 = (0 until 10).map { i =>
     ScalaSimpleFeature.create(sft, s"0$i", s"name0$i", s"foo${i % 2}", s"2017-03-15T00:0$i:00.000Z", s"POINT (4$i 5$i)")
@@ -45,6 +48,14 @@ class ArrowDataStoreTest extends Specification {
     ScalaSimpleFeature.create(sft, s"$i", s"name$i", s"foo${i % 3}", s"2017-03-15T00:$i:00.000Z", s"POINT (4${i -10} 5${i -10})")
   }
   val features = features0 ++ features1
+
+  def writer(
+      url: URL,
+      append: Boolean = false,
+      encoding: SimpleFeatureEncoding = SimpleFeatureEncoding.Min,
+      dictionaries: Map[String, ArrowDictionary] = Map.empty): SimpleFeatureArrowFileWriter = {
+    SimpleFeatureArrowFileWriter(new FileOutputStream(url.getPath, append), sft, dictionaries, encoding, ipcOpts, None)
+  }
 
   "ArrowDataStore" should {
     "write and read values" >> {
@@ -59,12 +70,9 @@ class ArrowDataStoreTest extends Specification {
         caching.getSchema(sft.getTypeName) mustEqual sft
         caching.dispose() must not(throwAn[Exception])
 
-        var writer = ds.getFeatureWriterAppend(sft.getTypeName, Transaction.AUTO_COMMIT)
-        features0.foreach { f =>
-          FeatureUtils.copyToWriter(writer, f, useProvidedFid = true)
-          writer.write()
+        WithClose(ds.getFeatureWriterAppend(sft.getTypeName, Transaction.AUTO_COMMIT)) { writer =>
+          features0.foreach(FeatureUtils.write(writer, _, useProvidedFid = true))
         }
-        writer.close()
 
         caching = DataStoreFinder.getDataStore(Map(UrlParam.key -> file, CachingParam.key -> true))
 
@@ -79,12 +87,9 @@ class ArrowDataStoreTest extends Specification {
 
         caching.dispose() must not(throwAn[Exception])
 
-        writer = ds.getFeatureWriterAppend(sft.getTypeName, Transaction.AUTO_COMMIT)
-        features1.foreach { f =>
-          FeatureUtils.copyToWriter(writer, f, useProvidedFid = true)
-          writer.write()
+        WithClose(ds.getFeatureWriterAppend(sft.getTypeName, Transaction.AUTO_COMMIT)) { writer =>
+          features1.foreach(FeatureUtils.write(writer, _, useProvidedFid = true))
         }
-        writer.close()
 
         caching = DataStoreFinder.getDataStore(Map(UrlParam.key -> file, CachingParam.key -> true))
 
@@ -114,7 +119,7 @@ class ArrowDataStoreTest extends Specification {
 
       "only schema" >> {
         withTempFile { url =>
-          WithClose(SimpleFeatureArrowFileWriter(sft, new FileOutputStream(url.getPath))) { _ => }
+          WithClose(writer(url)) { _ => }
           foreach(Seq(true, false)) { caching =>
             val ds = DataStoreFinder.getDataStore(Map(UrlParam.key -> url, CachingParam.key -> caching))
             ds.getSchema("test") mustEqual sft
@@ -127,7 +132,7 @@ class ArrowDataStoreTest extends Specification {
       "simple 2 batches" >> {
         val encoding = SimpleFeatureEncoding.min(includeFids = true)
         withTempFile { url =>
-          WithClose(SimpleFeatureArrowFileWriter(sft, new FileOutputStream(url.getPath), encoding = encoding)) { writer =>
+          WithClose(writer(url, encoding = encoding)) { writer =>
             features0.foreach(writer.add)
             writer.flush()
             features1.foreach(writer.add)
@@ -148,10 +153,10 @@ class ArrowDataStoreTest extends Specification {
       "multiple logical files" >> {
         val encoding = SimpleFeatureEncoding.min(includeFids = true)
         withTempFile { url =>
-          WithClose(SimpleFeatureArrowFileWriter(sft, new FileOutputStream(url.getPath), encoding = encoding)) { writer =>
+          WithClose(writer(url, encoding = encoding)) { writer =>
             features0.foreach(writer.add)
           }
-          WithClose(SimpleFeatureArrowFileWriter(sft, new FileOutputStream(url.getPath, true), encoding = encoding)) { writer =>
+          WithClose(writer(url, append = true, encoding)) { writer =>
             features1.foreach(writer.add)
           }
           foreach(Seq(true, false)) { caching =>
@@ -174,7 +179,7 @@ class ArrowDataStoreTest extends Specification {
           "foo"  -> ArrowDictionary.create(2L, features.map(_.getAttribute(1).asInstanceOf[String]).toArray)
         )
         withTempFile { url =>
-          WithClose(SimpleFeatureArrowFileWriter(sft, new FileOutputStream(url.getPath), dicts, encoding)) { writer =>
+          WithClose(writer(url, encoding = encoding, dictionaries = dicts)) { writer =>
             features.foreach(writer.add)
           }
           foreach(Seq(true, false)) { caching =>
@@ -194,7 +199,7 @@ class ArrowDataStoreTest extends Specification {
         val encoding = SimpleFeatureEncoding.min(includeFids = true)
         val dicts = Map("foo"  -> ArrowDictionary.create(1L, Array("foo0", "foo1")))
         withTempFile { url =>
-          WithClose(SimpleFeatureArrowFileWriter(sft, new FileOutputStream(url.getPath), dicts, encoding)) { writer =>
+          WithClose(writer(url, encoding = encoding, dictionaries = dicts)) { writer =>
             features.foreach(writer.add)
           }
           // the file has only 'foo0' and 'foo1' encoded

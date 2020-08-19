@@ -1,158 +1,191 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
  * http://www.opensource.org/licenses/apache2.0.php.
  ***********************************************************************/
 
-package org.locationtech.geomesa.features.kryo.impl
+package org.locationtech.geomesa.features.kryo
+package impl
 
 import java.io.InputStream
 import java.util.{Date, UUID}
 
 import com.esotericsoftware.kryo.io.Input
+import com.typesafe.scalalogging.LazyLogging
 import org.locationtech.geomesa.features.SimpleFeatureSerializer
-import org.locationtech.geomesa.features.kryo.KryoBufferSimpleFeature
-import org.locationtech.geomesa.features.kryo.KryoFeatureSerializer.NULL_BYTE
-import org.locationtech.geomesa.features.kryo.impl.KryoFeatureDeserialization.getReaders
+import org.locationtech.geomesa.features.kryo.impl.KryoFeatureDeserialization.KryoAttributeReader
 import org.locationtech.geomesa.features.kryo.json.KryoJsonSerialization
-import org.locationtech.geomesa.features.kryo.serialization.{KryoGeometrySerialization, KryoUserDataSerialization}
+import org.locationtech.geomesa.features.kryo.serialization.KryoGeometrySerialization
 import org.locationtech.geomesa.features.serialization.ObjectType
 import org.locationtech.geomesa.features.serialization.ObjectType.ObjectType
-import org.locationtech.geomesa.utils.cache.{CacheKeyGenerator, SoftThreadLocal, SoftThreadLocalCache}
+import org.locationtech.geomesa.utils.cache.{CacheKeyGenerator, SoftThreadLocal, ThreadLocalCache}
+import org.locationtech.geomesa.utils.kryo.NonMutatingInput
+import org.locationtech.jts.geom.Geometry
+import org.opengis.feature.`type`.AttributeDescriptor
 import org.opengis.feature.simple.SimpleFeatureType
+
+import scala.util.control.NonFatal
 
 /**
   * Base trait for kryo deserialization
   */
-trait KryoFeatureDeserialization extends SimpleFeatureSerializer {
+trait KryoFeatureDeserialization extends SimpleFeatureSerializer with LazyLogging {
 
-  private [kryo] def deserializeSft: SimpleFeatureType
+  private val key = CacheKeyGenerator.cacheKey(out)
 
-  private val withoutUserData = !options.withUserData
-  protected val withoutId: Boolean = options.withoutId
+  protected [kryo] val withoutUserData: Boolean = !options.withUserData
+  protected [kryo] val withoutId: Boolean = options.withoutId
 
-  protected val readers: Array[Input => AnyRef] = getReaders(CacheKeyGenerator.cacheKey(deserializeSft), deserializeSft)
+  protected [kryo] val readers: Array[KryoAttributeReader] = KryoFeatureDeserialization.getReaders(key, out)
+  protected [kryo] lazy val readersV2: Array[Input => AnyRef] = KryoFeatureDeserializationV2.getReaders(key, out)
 
-  protected def readUserData(input: Input, skipOffsets: Boolean): java.util.Map[AnyRef, AnyRef] = {
-    if (withoutUserData) {
-      new java.util.HashMap[AnyRef, AnyRef]
-    } else {
-      if (skipOffsets) {
-        // skip offset data
-        var i = 0
-        while (i < readers.length) {
-          input.readInt(true)
-          i += 1
-        }
-      }
-      KryoUserDataSerialization.deserialize(input)
-    }
-  }
+  protected [kryo] def out: SimpleFeatureType
 
-  def getReusableFeature: KryoBufferSimpleFeature =
-    new KryoBufferSimpleFeature(deserializeSft, readers, readUserData(_, skipOffsets = false), options)
+  def getReusableFeature: KryoBufferSimpleFeature = new KryoBufferSimpleFeature(this)
 }
 
-object KryoFeatureDeserialization {
+object KryoFeatureDeserialization extends LazyLogging {
 
-  private[this] val inputs  = new SoftThreadLocal[Input]()
-  private[this] val readers = new SoftThreadLocalCache[String, Array[(Input) => AnyRef]]()
+  private val inputBytes   = new SoftThreadLocal[Input]()
+  private val inputStreams = new SoftThreadLocal[Input]()
+  private val readers      = new ThreadLocalCache[String, Array[KryoAttributeReader]](SerializerCacheExpiry)
 
   def getInput(bytes: Array[Byte], offset: Int, count: Int): Input = {
-    val in = inputs.getOrElseUpdate(new Input)
+    val in = inputBytes.getOrElseUpdate(new NonMutatingInput())
     in.setBuffer(bytes, offset, count)
     in
   }
 
   def getInput(stream: InputStream): Input = {
-    val in = inputs.getOrElseUpdate(new Input)
-    in.setBuffer(Array.ofDim(1024))
+    val in = inputStreams.getOrElseUpdate(new NonMutatingInput(Array.ofDim(1024)))
     in.setInputStream(stream)
     in
   }
 
-  private [geomesa] def getReaders(key: String, sft: SimpleFeatureType): Array[(Input) => AnyRef] = {
-    import scala.collection.JavaConversions._
-    readers.getOrElseUpdate(key, sft.getAttributeDescriptors.map { ad =>
-      val bindings = ObjectType.selectType(ad.getType.getBinding, ad.getUserData)
-      matchReader(bindings)
-    }.toArray)
+  def getReaders(key: String, sft: SimpleFeatureType): Array[KryoAttributeReader] = {
+    readers.getOrElseUpdate(key, sft.getAttributeDescriptors.toArray.map {
+      case ad: AttributeDescriptor => reader(ObjectType.selectType(ad))
+    })
   }
 
-  private [geomesa] def matchReader(bindings: Seq[ObjectType]): (Input) => AnyRef = {
+  private [geomesa] def reader(bindings: Seq[ObjectType]): KryoAttributeReader = {
     bindings.head match {
-      case ObjectType.STRING => (i: Input) => i.readString()
-      case ObjectType.INT => readNullable((i: Input) => i.readInt().asInstanceOf[AnyRef])
-      case ObjectType.LONG => readNullable((i: Input) => i.readLong().asInstanceOf[AnyRef])
-      case ObjectType.FLOAT => readNullable((i: Input) => i.readFloat().asInstanceOf[AnyRef])
-      case ObjectType.DOUBLE => readNullable((i: Input) => i.readDouble().asInstanceOf[AnyRef])
-      case ObjectType.BOOLEAN => readNullable((i: Input) => i.readBoolean().asInstanceOf[AnyRef])
-      case ObjectType.DATE => readNullable((i: Input) => new Date(i.readLong()).asInstanceOf[AnyRef])
-      case ObjectType.UUID =>
-        val w = (i: Input) => {
-          val mostSignificantBits = i.readLong()
-          val leastSignificantBits = i.readLong()
-          new UUID(mostSignificantBits, leastSignificantBits)
-        }
-        readNullable(w)
-      case ObjectType.GEOMETRY => KryoGeometrySerialization.deserialize // null checks are handled by geometry serializer
-      case ObjectType.JSON => (i: Input) => KryoJsonSerialization.deserializeAndRender(i)
-      case ObjectType.LIST =>
-        val valueReader = matchReader(bindings.drop(1))
-        (i: Input) => {
-          val size = i.readInt(true)
-          if (size == -1) {
-            null
-          } else {
-            val list = new java.util.ArrayList[AnyRef](size)
-            var index = 0
-            while (index < size) {
-              list.add(valueReader(i))
-              index += 1
-            }
-            list
-          }
-        }
-      case ObjectType.MAP =>
-        val keyReader = matchReader(bindings.slice(1, 2))
-        val valueReader = matchReader(bindings.drop(2))
-        (i: Input) => {
-          val size = i.readInt(true)
-          if (size == -1) {
-            null
-          } else {
-            val map = new java.util.HashMap[AnyRef, AnyRef](size)
-            var index = 0
-            while (index < size) {
-              map.put(keyReader(i), valueReader(i))
-              index += 1
-            }
-            map
-          }
-        }
-      case ObjectType.BYTES =>
-        (i: Input) => {
-          val size = i.readInt(true)
-          if (size == -1) {
-            null
-          } else {
-            val arr = new Array[Byte](size)
-            i.read(arr)
-            arr
-          }
-        }
+      case ObjectType.STRING   => if (bindings.last == ObjectType.JSON) { KryoJsonReader } else { KryoStringReader }
+      case ObjectType.INT      => KryoIntReader
+      case ObjectType.LONG     => KryoLongReader
+      case ObjectType.FLOAT    => KryoFloatReader
+      case ObjectType.DOUBLE   => KryoDoubleReader
+      case ObjectType.DATE     => KryoDateReader
+      case ObjectType.GEOMETRY => KryoGeometryReader
+      case ObjectType.BYTES    => KryoBytesReader
+      case ObjectType.UUID     => KryoUuidReader
+      case ObjectType.BOOLEAN  => KryoBooleanReader
+      case ObjectType.LIST     => KryoListReader(reader(bindings.drop(1)))
+      case ObjectType.MAP      => KryoMapReader(reader(bindings.slice(1, 2)), reader(bindings.drop(2)))
+
+      case b => throw new NotImplementedError(s"Unexpected attribute type binding: $b")
     }
   }
 
-  private def readNullable(wrapped: (Input) => AnyRef): (Input) => AnyRef = {
-    (i: Input) => {
-      if (i.read() == NULL_BYTE) {
-        null
-      } else {
-        wrapped(i)
+  sealed trait KryoAttributeReader {
+    def apply(input: Input): AnyRef
+  }
+
+  case object KryoStringReader extends KryoAttributeReader {
+    override def apply(input: Input): String = try { input.readString() } catch {
+      case NonFatal(e) => logger.error("Error reading serialized kryo bytes:", e); null
+    }
+  }
+
+  case object KryoIntReader extends KryoAttributeReader {
+    override def apply(input: Input): Integer = try { input.readInt() } catch {
+      case NonFatal(e) => logger.error("Error reading serialized kryo bytes:", e); null
+    }
+  }
+
+  case object KryoLongReader extends KryoAttributeReader {
+    override def apply(input: Input): java.lang.Long = try { input.readLong() } catch {
+      case NonFatal(e) => logger.error("Error reading serialized kryo bytes:", e); null
+    }
+  }
+
+  case object KryoFloatReader extends KryoAttributeReader {
+    override def apply(input: Input): java.lang.Float = try { input.readFloat() } catch {
+      case NonFatal(e) => logger.error("Error reading serialized kryo bytes:", e); null
+    }
+  }
+
+  case object KryoDoubleReader extends KryoAttributeReader {
+    override def apply(input: Input): java.lang.Double = try { input.readDouble() } catch {
+      case NonFatal(e) => logger.error("Error reading serialized kryo bytes:", e); null
+    }
+  }
+
+  case object KryoBooleanReader extends KryoAttributeReader {
+    override def apply(input: Input): java.lang.Boolean = try { input.readBoolean() } catch {
+      case NonFatal(e) => logger.error("Error reading serialized kryo bytes:", e); null
+    }
+  }
+
+  case object KryoDateReader extends KryoAttributeReader {
+    override def apply(input: Input): Date = try { new Date(input.readLong()) } catch {
+      case NonFatal(e) => logger.error("Error reading serialized kryo bytes", e); null
+    }
+  }
+
+  case object KryoUuidReader extends KryoAttributeReader {
+    override def apply(input: Input): UUID = try { new UUID(input.readLong(), input.readLong()) } catch {
+      case NonFatal(e) => logger.error("Error reading serialized kryo bytes:", e); null
+    }
+  }
+
+  case object KryoBytesReader extends KryoAttributeReader {
+    override def apply(input: Input): Array[Byte] = try {
+      val array = new Array[Byte](input.readInt(true))
+      input.read(array)
+      array
+    } catch {
+      case NonFatal(e) => logger.error("Error reading serialized kryo bytes:", e); null
+    }
+  }
+
+  case object KryoJsonReader extends KryoAttributeReader {
+    override def apply(input: Input): String = KryoJsonSerialization.deserializeAndRender(input)
+  }
+
+  case object KryoGeometryReader extends KryoAttributeReader {
+    override def apply(input: Input): Geometry = KryoGeometrySerialization.deserialize(input)
+  }
+
+  case class KryoListReader(elements: KryoAttributeReader) extends KryoAttributeReader {
+    override def apply(input: Input): java.util.List[AnyRef] = try {
+      val size = input.readInt(true)
+      val list = new java.util.ArrayList[AnyRef](size)
+      var index = 0
+      while (index < size) {
+        list.add(elements.apply(input))
+        index += 1
       }
+      list
+    } catch {
+      case NonFatal(e) => logger.error("Error reading serialized kryo bytes:", e); null
+    }
+  }
+
+  case class KryoMapReader(keys: KryoAttributeReader, values: KryoAttributeReader) extends KryoAttributeReader {
+    override def apply(input: Input): java.util.Map[AnyRef, AnyRef] = try {
+      val size = input.readInt(true)
+      val map = new java.util.HashMap[AnyRef, AnyRef](size)
+      var index = 0
+      while (index < size) {
+        map.put(keys.apply(input), values.apply(input))
+        index += 1
+      }
+      map
+    } catch {
+      case NonFatal(e) => logger.error("Error reading serialized kryo bytes:", e); null
     }
   }
 }

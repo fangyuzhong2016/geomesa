@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -10,18 +10,24 @@ package org.locationtech.geomesa.index.filters
 
 import java.nio.ByteBuffer
 
-import com.google.common.primitives.{Longs, Shorts}
+import org.locationtech.geomesa.index.filters.RowFilter.RowFilterFactory
 import org.locationtech.geomesa.index.index.z3.Z3IndexValues
+import org.locationtech.geomesa.utils.index.ByteArrays
 import org.locationtech.sfcurve.zorder.Z3
 
-class Z3Filter(val xy: Array[Array[Int]], val t: Array[Array[Array[Int]]], val minEpoch: Short, val maxEpoch: Short) {
+class Z3Filter(
+    val xy: Array[Array[Int]],
+    val t: Array[Array[Array[Int]]],
+    val minEpoch: Short,
+    val maxEpoch: Short
+  ) extends RowFilter {
 
-  def inBounds(buf: Array[Byte], offset: Int): Boolean = {
-    val keyZ = Z3Filter.rowToZ(buf, offset)
-    pointInBounds(keyZ) && timeInBounds(Z3Filter.rowToEpoch(buf, offset), keyZ)
+  override def inBounds(buf: Array[Byte], offset: Int): Boolean = {
+    val keyZ = ByteArrays.readLong(buf, offset + 2) // account for epoch - first 2 bytes
+    pointInBounds(keyZ) && timeInBounds(ByteArrays.readShort(buf, offset), keyZ)
   }
 
-  def pointInBounds(z: Long): Boolean = {
+  private def pointInBounds(z: Long): Boolean = {
     val x = Z3(z).d0
     val y = Z3(z).d1
     var i = 0
@@ -35,7 +41,7 @@ class Z3Filter(val xy: Array[Array[Int]], val t: Array[Array[Array[Int]]], val m
     false
   }
 
-  def timeInBounds(epoch: Short, z: Long): Boolean = {
+  private def timeInBounds(epoch: Short, z: Long): Boolean = {
     // we know we're only going to scan appropriate epochs, so leave out whole epochs
     if (epoch > maxEpoch || epoch < minEpoch) { true } else {
       val tEpoch = t(epoch - minEpoch)
@@ -57,7 +63,7 @@ class Z3Filter(val xy: Array[Array[Int]], val t: Array[Array[Array[Int]]], val m
   override def toString: String = Z3Filter.serializeToStrings(this).toSeq.sortBy(_._1).mkString(",")
 }
 
-object Z3Filter {
+object Z3Filter extends RowFilterFactory[Z3Filter] {
 
   private val RangeSeparator = ":"
   private val TermSeparator  = ";"
@@ -68,7 +74,7 @@ object Z3Filter {
   val EpochKey  = "epoch"
 
   def apply(values: Z3IndexValues): Z3Filter = {
-    val Z3IndexValues(sfc, _, spatialBounds, _, temporalBounds) = values
+    val Z3IndexValues(sfc, _, spatialBounds, _, temporalBounds, _) = values
 
     val xy: Array[Array[Int]] = spatialBounds.map { case (xmin, ymin, xmax, ymax) =>
       Array(sfc.lon.normalize(xmin), sfc.lat.normalize(ymin), sfc.lon.normalize(xmax), sfc.lat.normalize(ymax))
@@ -101,7 +107,7 @@ object Z3Filter {
     new Z3Filter(xy, t, minEpoch, maxEpoch)
   }
 
-  def serializeToBytes(filter: Z3Filter): Array[Byte] = {
+  override def serializeToBytes(filter: Z3Filter): Array[Byte] = {
     // 4 bytes for length plus 16 bytes for each xy val (4 ints)
     val xyLength = 4 + filter.xy.length * 16
     // 4 bytes for length, then per-epoch 4 bytes for length plus 8 bytes for each t val (2 ints)
@@ -128,7 +134,7 @@ object Z3Filter {
     buffer.array()
   }
 
-  def deserializeFromBytes(serialized: Array[Byte]): Z3Filter = {
+  override def deserializeFromBytes(serialized: Array[Byte]): Z3Filter = {
     val buffer = ByteBuffer.wrap(serialized)
 
     val xy = Array.fill(buffer.getInt())(Array.fill(4)(buffer.getInt))
@@ -144,7 +150,7 @@ object Z3Filter {
     new Z3Filter(xy, t, minEpoch, maxEpoch)
   }
 
-  def serializeToStrings(filter: Z3Filter): Map[String, String] = {
+  override def serializeToStrings(filter: Z3Filter): Map[String, String] = {
     val xy = filter.xy.map(bounds => bounds.mkString(RangeSeparator)).mkString(TermSeparator)
     val t = filter.t.map { bounds =>
       if (bounds == null) { "" } else {
@@ -160,7 +166,7 @@ object Z3Filter {
     )
   }
 
-  def deserializeFromStrings(serialized: scala.collection.Map[String, String]): Z3Filter = {
+  override def deserializeFromStrings(serialized: scala.collection.Map[String, String]): Z3Filter = {
     val xy = serialized(XYKey).split(TermSeparator).map(_.split(RangeSeparator).map(_.toInt))
     val t = serialized(TKey).split(EpochSeparator).map { bounds =>
       if (bounds.isEmpty) { null } else {
@@ -171,11 +177,4 @@ object Z3Filter {
 
     new Z3Filter(xy, t, minEpoch, maxEpoch)
   }
-
-  // account for epoch - first 2 bytes
-  def rowToZ(b: Array[Byte], i: Int): Long =
-    Longs.fromBytes(b(i + 2), b(i + 3), b(i + 4), b(i + 5), b(i + 6), b(i + 7), b(i + 8), b(i + 9))
-
-  def rowToEpoch(bytes: Array[Byte], offset: Int): Short =
-    Shorts.fromBytes(bytes(offset), bytes(offset + 1))
 }

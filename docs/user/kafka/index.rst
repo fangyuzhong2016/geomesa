@@ -3,6 +3,11 @@
 Kafka Data Store
 ================
 
+.. note::
+
+    GeoMesa currently supports Kafka version |kafka_version|. However, not all features are supported
+    for versions prior to 1.0.
+
 The GeoMesa Kafka Data Store is an implementation of the GeoTools
 ``DataStore`` interface that is backed by `Apache Kafka`_. The
 implementation supports the ability for feature producers to instantiate
@@ -25,10 +30,11 @@ To get started with the Kafka Data Store, try the :doc:`/tutorials/geomesa-quick
 
    install
    usage
-   geoserver
-   commandline
    producers
    consumers
+   geoserver
+   commandline
    index_config
    data
    feature_events
+   confluent

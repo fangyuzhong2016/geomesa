@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -14,12 +14,13 @@ import java.nio.{ByteBuffer, ByteOrder}
 import java.util.Date
 
 import com.typesafe.scalalogging.LazyLogging
-import com.vividsolutions.jts.geom.{Geometry, LineString, Point}
 import org.locationtech.geomesa.utils.bin.BinaryEncodeCallback.{ByteArrayCallback, ByteStreamCallback}
 import org.locationtech.geomesa.utils.bin.BinaryOutputEncoder.ToValues
 import org.locationtech.geomesa.utils.collection.CloseableIterator
-import org.locationtech.geomesa.utils.geotools.AttributeSpec.ListAttributeSpec
-import org.locationtech.geomesa.utils.geotools.{SimpleFeatureSpecParser, SimpleFeatureTypes}
+import org.locationtech.geomesa.utils.geotools.SimpleFeatureTypes
+import org.locationtech.geomesa.utils.geotools.sft.SimpleFeatureSpec.ListAttributeSpec
+import org.locationtech.geomesa.utils.geotools.sft.SimpleFeatureSpecParser
+import org.locationtech.jts.geom.{Geometry, LineString, Point}
 import org.opengis.feature.simple.{SimpleFeature, SimpleFeatureType}
 
 import scala.collection.JavaConversions._
@@ -84,6 +85,43 @@ object BinaryOutputEncoder extends LazyLogging {
                              axisOrder: Option[AxisOrder] = None)
 
   case class EncodedValues(trackId: Int, lat: Float, lon: Float, dtg: Long, label: Long)
+
+  /**
+    * BIN queries pack multiple records into each feature. To count the records, we have to count
+    * the total bytes coming back, instead of the number of features
+    *
+    * @param iter aggregated bin iter
+    * @param maxFeatures max features
+    * @param hasLabel bin results have labels (extended format) or not
+    */
+  class FeatureLimitingIterator(iter: CloseableIterator[SimpleFeature], maxFeatures: Int, hasLabel: Boolean)
+      extends CloseableIterator[SimpleFeature] {
+
+    private val bytesPerHit = if (hasLabel) { 24 } else { 16 }
+    private var seen = 0L
+
+    override def hasNext: Boolean = seen < maxFeatures && iter.hasNext
+
+    override def next(): SimpleFeature = {
+      if (hasNext) {
+        val sf = iter.next()
+        val bytes = sf.getAttribute(0).asInstanceOf[Array[Byte]]
+        val count = bytes.length / bytesPerHit
+        seen += count
+        if (seen > maxFeatures) {
+          // remove the extra aggregated features so that we hit our exact feature limit
+          val trimmed = Array.ofDim[Byte]((count - (seen - maxFeatures).toInt) * bytesPerHit)
+          System.arraycopy(bytes, 0, trimmed, 0, trimmed.length)
+          sf.setAttribute(0, trimmed)
+        }
+        sf
+      } else {
+        Iterator.empty.next()
+      }
+    }
+
+    override def close(): Unit = iter.close()
+  }
 
   def apply(sft: SimpleFeatureType, options: EncodingOptions): BinaryOutputEncoder =
     new BinaryOutputEncoder(toValues(sft, options))

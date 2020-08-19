@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -8,10 +8,10 @@
 
 package org.locationtech.geomesa.utils.geotools
 
-import com.google.common.primitives.Primitives
 import org.locationtech.geomesa.curve.TimePeriod.TimePeriod
-import org.locationtech.geomesa.utils.geotools.AttributeSpec.{ListAttributeSpec, MapAttributeSpec}
 import org.locationtech.geomesa.utils.geotools.SchemaBuilder.{AbstractSchemaBuilder, AttributeBuilder, UserDataBuilder}
+import org.locationtech.geomesa.utils.geotools.sft.SimpleFeatureSpec
+import org.locationtech.geomesa.utils.geotools.sft.SimpleFeatureSpec.{ListAttributeSpec, MapAttributeSpec}
 import org.locationtech.geomesa.utils.stats.Cardinality.Cardinality
 import org.opengis.feature.`type`.AttributeDescriptor
 import org.opengis.feature.simple.SimpleFeatureType
@@ -156,7 +156,7 @@ object SchemaBuilder {
       */
     def addDate(name: String, default: Boolean = false): A = {
       if (default) {
-        userData(SimpleFeatureTypes.Configs.DEFAULT_DATE_KEY, name)
+        userData(SimpleFeatureTypes.Configs.DefaultDtgField, name)
       }
       add(s"$name:Date")
     }
@@ -262,7 +262,7 @@ object SchemaBuilder {
       */
     def addMixedGeometry(name: String, default: Boolean = false): A = {
       if (default) {
-        userData(SimpleFeatureTypes.Configs.MIXED_GEOMETRIES, "true")
+        userData(SimpleFeatureTypes.Configs.MixedGeometries, "true")
       }
       add(geom(name, "Geometry", default))
     }
@@ -273,7 +273,7 @@ object SchemaBuilder {
       * @param ad attribute descriptor
       * @return schema builder for chaining additional calls
       */
-    def addAttribute(ad: AttributeDescriptor): A = add(AttributeSpec(null, ad).toSpec)
+    def addAttribute(ad: AttributeDescriptor): A = add(SimpleFeatureSpec.attribute(null, ad).toSpec)
 
     /**
       * Add feature-level user data
@@ -306,6 +306,16 @@ object SchemaBuilder {
       */
     def build(name: String): SimpleFeatureType = SimpleFeatureTypes.createType(name, spec)
 
+    /**
+      * Create a new simple feature type using the current attributes
+      *
+      * @param namespace simple feature type namespace
+      * @param name simple feature type name
+      * @return simple feature type
+      */
+    def build(namespace: String, name: String): SimpleFeatureType =
+      SimpleFeatureTypes.createType(namespace, name, spec)
+
     protected def add(spec: String): A = {
       if (specString.nonEmpty) {
         specString.append(",")
@@ -317,7 +327,20 @@ object SchemaBuilder {
     protected def createAttributeBuilder(spec: StringBuilder): A
     protected def createUserDataBuilder(userData: StringBuilder): U
 
-    private def classy[T: ClassTag]: Class[_] = Primitives.wrap(classTag[T].runtimeClass)
+    private def classy[T: ClassTag]: Class[_] = {
+      classTag[T].runtimeClass match {
+        case java.lang.Byte.TYPE      => classOf[java.lang.Byte]
+        case java.lang.Short.TYPE     => classOf[java.lang.Short]
+        case java.lang.Character.TYPE => classOf[java.lang.Character]
+        case java.lang.Integer.TYPE   => classOf[java.lang.Integer]
+        case java.lang.Long.TYPE      => classOf[java.lang.Long]
+        case java.lang.Float.TYPE     => classOf[java.lang.Float]
+        case java.lang.Double.TYPE    => classOf[java.lang.Double]
+        case java.lang.Boolean.TYPE   => classOf[java.lang.Boolean]
+        case java.lang.Void.TYPE      => classOf[java.lang.Void]
+        case c                        => c
+      }
+    }
 
     private def geom(name: String, binding: String, default: Boolean): String =
       if (default) { s"*$name:$binding:srid=4326" } else { s"$name:$binding:srid=4326" }
@@ -338,7 +361,7 @@ object SchemaBuilder {
       *
       * @return attribute builder for chaining calls
       */
-    def withIndex(): A = withOption(AttributeOptions.OPT_INDEX, "true")
+    def withIndex(): A = withOption(AttributeOptions.OptIndex, "true")
 
     /**
       * Add an index on the current attribute, to facilitate querying on that attribute
@@ -348,7 +371,7 @@ object SchemaBuilder {
       * @return attribute builder for chaining calls
       */
     def withIndex(cardinality: Cardinality): A =
-      withOptions(AttributeOptions.OPT_INDEX -> "true", AttributeOptions.OPT_CARDINALITY -> cardinality.toString)
+      withOptions(AttributeOptions.OptIndex -> "true", AttributeOptions.OptCardinality -> cardinality.toString)
 
     /**
       * Specify column groups for a particular attribute, to speed up querying for subsets of attributes
@@ -356,7 +379,7 @@ object SchemaBuilder {
       * @param groups column groups - preferably short strings (one character is best), case sensitive
       * @return
       */
-    def withColumnGroups(groups: String*): A = withOptions(AttributeOptions.OPT_COL_GROUPS -> groups.mkString(","))
+    def withColumnGroups(groups: String*): A = withOptions(AttributeOptions.OptColumnGroups -> groups.mkString(","))
 
     /**
       * Add any attribute-level option
@@ -403,7 +426,7 @@ object SchemaBuilder {
       * @param names names of the indices to enable (e.g. "z3", "id", etc)
       * @return user data builder for chaining calls
       */
-    def indices(names: List[String]): U = userData(Configs.ENABLED_INDICES, names.mkString(","))
+    def indices(names: List[String]): U = userData(Configs.EnabledIndices, names.mkString(","))
 
     /**
       * Disable indexing on the default date field. If the default date field has not been specified,
@@ -411,7 +434,7 @@ object SchemaBuilder {
       *
       * @return user data builder for chaining calls
       */
-    def disableDefaultDate(): U = userData(Configs.IGNORE_INDEX_DTG, "true")
+    def disableDefaultDate(): U = userData(Configs.IndexIgnoreDtg, "true")
 
     /**
       * Configure table splits for a schema
@@ -420,7 +443,7 @@ object SchemaBuilder {
       * @return user data builder for chaining calls
       */
     def splits(options: Map[String,String]): U =
-      userData(Configs.TABLE_SPLITTER_OPTS, options.map { case (k, v) => s"$k:$v" }.mkString(","))
+      userData(Configs.TableSplitterOpts, options.map { case (k, v) => s"$k:$v" }.mkString(","))
 
     /**
       * Specify the number of shards to use for the Z indices. Shards can provide distribution
@@ -431,7 +454,7 @@ object SchemaBuilder {
       * @param shards number of shards
       * @return user data builder for chaining calls
       */
-    def zShards(shards: Int): U = userData(Configs.Z_SPLITS_KEY, shards.toString)
+    def zShards(shards: Int): U = userData(Configs.IndexZShards, shards.toString)
 
     /**
       * Specify the number of shards to use for the attribute index. Shards can provide distribution
@@ -442,7 +465,7 @@ object SchemaBuilder {
       * @param shards number of shards
       * @return user data builder for chaining calls
       */
-    def attributeShards(shards: Int): U = userData(Configs.ATTR_SPLITS_KEY, shards.toString)
+    def attributeShards(shards: Int): U = userData(Configs.IndexAttributeShards, shards.toString)
 
     /**
       * Specifies that feature IDs are UUIDs. This can save space on disk, as a UUID can be serialized more
@@ -451,7 +474,7 @@ object SchemaBuilder {
       *
       * @return user data builder for chaining calls
       */
-    def uuidFeatureIds(): U = userData(Configs.FID_UUID_KEY, "true")
+    def uuidFeatureIds(): U = userData(Configs.FidsAreUuids, "true")
 
     /**
       * Sets the time interval used for binning dates in the Z3 and XZ3 indices
@@ -459,7 +482,7 @@ object SchemaBuilder {
       * @param interval time interval to use
       * @return user data builder for chaining calls
       */
-    def z3Interval(interval: TimePeriod): U = userData(Configs.Z3_INTERVAL_KEY, interval.toString)
+    def z3Interval(interval: TimePeriod): U = userData(Configs.IndexZ3Interval, interval.toString)
 
     /**
       * Set the precision of the XZ index (if used).
@@ -469,14 +492,14 @@ object SchemaBuilder {
       * @param precision precision
       * @return user data builder for chaining calls
       */
-    def xzPrecision(precision: Int): U = userData(Configs.XZ_PRECISION_KEY, precision.toString)
+    def xzPrecision(precision: Int): U = userData(Configs.IndexXzPrecision, precision.toString)
 
     /**
       * Enable date-based table partitioning
       *
       * @return user data builder for chainging calls
       */
-    def partitioned(): U = userData(Configs.TABLE_PARTITIONING, "time")
+    def partitioned(): U = userData(Configs.TablePartitioning, "time")
 
     /**
       * Add arbitrary user data values to the schema

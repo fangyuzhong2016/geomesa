@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -13,7 +13,8 @@ import java.util.concurrent.{Executors, LinkedBlockingQueue}
 
 import com.typesafe.scalalogging.StrictLogging
 import org.geotools.data.{DataStore, Query, Transaction}
-import org.geotools.factory.{CommonFactoryFinder, Hints}
+import org.geotools.factory.CommonFactoryFinder
+import org.geotools.util.factory.Hints
 import org.geotools.feature.simple.SimpleFeatureImpl
 import org.geotools.temporal.`object`.{DefaultInstant, DefaultPeriod, DefaultPosition}
 import org.locationtech.geomesa.utils.collection.{CloseableIterator, SelfClosingIterator}

@@ -13,10 +13,16 @@ Initial Load (Replay)
 ---------------------
 
 By default, a Kafka consumer data store will start consuming from the end of a topic. This means that it will
-only see new updates that are written after it has spun up. Optionally, the consumer may start from the beginning
-of the topic, by setting ``kafka.consumer.from-beginning`` to ``true`` in the data store parameters. This
-allows a consumer to replay old messages and establish a baseline state. Note that a feature store will not return
-any query results during this initial load, until it has caught up to head state.
+only see new updates that are written after it has spun up. Optionally, the consumer may start from earlier
+in the topic, by setting ``kafka.consumer.read-back`` to a duration, such as ``1 hour``, in the data store
+parameters. This allows a consumer to replay old messages and establish a baseline state. To read the entire
+message queue, use the value ``Inf``.
+
+Reading back by a given interval is only supported in Kafka starting with version 0.10.1. Older versions will fall
+back to reading from the very beginning of the topic.
+
+Note that a feature store will not return any query results during this initial load, until it has caught up to
+head state.
 
 Also see :ref:`topic_compaction` for details on managing the size and history of the Kafka topic.
 
@@ -31,6 +37,9 @@ data store may expire features after a certain timeout, by specifying the ``kafk
 parameter. When a producer writes an update to an existing feature, the consumer will reset the expiration timeout.
 Once the timeout is hit without any updates, the feature will be removed from the consumer cache and will no
 longer be returned when querying.
+
+If the expiry is set to zero, features will not be indexed or searchable. However, they will still be passed
+to any :ref:`feature listeners <kafka_feature_events>` that are configured.
 
 .. _kafka_event_time:
 

@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -13,9 +13,10 @@ import org.geotools.data.Query
 import org.geotools.data.collection.ListFeatureCollection
 import org.geotools.data.simple.{SimpleFeatureCollection, SimpleFeatureSource}
 import org.geotools.process.factory.{DescribeParameter, DescribeProcess, DescribeResult}
-import org.geotools.util.NullProgressListener
 import org.locationtech.geomesa.filter.factory.FastFilterFactory
-import org.locationtech.geomesa.process.{FeatureResult, GeoMesaProcess, GeoMesaProcessVisitor}
+import org.locationtech.geomesa.index.geotools.GeoMesaFeatureCollection
+import org.locationtech.geomesa.index.process.GeoMesaProcessVisitor
+import org.locationtech.geomesa.process.{FeatureResult, GeoMesaProcess}
 import org.locationtech.geomesa.utils.collection.SelfClosingIterator
 import org.locationtech.geomesa.utils.geotools.Conversions._
 import org.opengis.feature.Feature
@@ -49,7 +50,7 @@ class ProximitySearchProcess extends GeoMesaProcess with LazyLogging {
     logger.debug(s"Attempting Geomesa Proximity Search on collection type ${dataFeatures.getClass.getName}")
 
     val visitor = new ProximityVisitor(inputFeatures, dataFeatures, bufferDistance.doubleValue())
-    dataFeatures.accepts(visitor, new NullProgressListener)
+    GeoMesaFeatureCollection.visit(dataFeatures, visitor)
     visitor.getResult.results
   }
 }

@@ -17,6 +17,7 @@ Type Conversions
 -  ``stringToFloat``
 -  ``stringToDouble``
 -  ``stringToBoolean``
+-  ``intToBoolean``
 
 String Functions
 ~~~~~~~~~~~~~~~~
@@ -45,14 +46,17 @@ Date Functions
 -  ``date``
 -  ``dateTime``
 -  ``basicIsoDate``
+-  ``isoDate``
 -  ``isoLocalDate``
 -  ``basicDateTime``
+-  ``isoDateTime``
 -  ``isoLocalDateTime``
 -  ``isoOffsetDateTime``
 -  ``basicDateTimeNoMillis``
 -  ``dateHourMinuteSecondMillis``
 -  ``millisToDate``
 -  ``secsToDate``
+-  ``dateToString``
 
 Geometry Functions
 ~~~~~~~~~~~~~~~~~~
@@ -103,6 +107,13 @@ Control Functions
 
 -  ``try``
 -  ``withDefault``
+-  ``require``
+
+State Functions
+~~~~~~~~~~~~~~~
+
+-  ``inputFilePath``
+-  ``lineNo``
 
 .. _convert_scripting_functions:
 

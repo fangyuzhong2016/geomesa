@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -13,10 +13,10 @@ import org.apache.accumulo.core.client.{Connector, IteratorSetting}
 import org.apache.accumulo.core.data.{Key, Value}
 import org.apache.accumulo.core.iterators.IteratorUtil.IteratorScope
 import org.apache.accumulo.core.iterators.{Combiner, IteratorEnvironment, SortedKeyValueIterator}
-import org.locationtech.geomesa.accumulo.AccumuloVersion
-import org.locationtech.geomesa.accumulo.data.SingleRowAccumuloMetadata
+import org.locationtech.geomesa.accumulo.data.AccumuloBackedMetadata.SingleRowAccumuloMetadata
 import org.locationtech.geomesa.accumulo.data.stats.AccumuloGeoMesaStats.CombinerName
-import org.locationtech.geomesa.index.metadata.CachedLazyBinaryMetadata
+import org.locationtech.geomesa.accumulo.util.TableUtils
+import org.locationtech.geomesa.index.metadata.KeyValueStoreMetadata
 import org.locationtech.geomesa.utils.geotools.SimpleFeatureTypes
 import org.locationtech.geomesa.utils.stats.{Stat, StatSerializer}
 import org.opengis.feature.simple.SimpleFeatureType
@@ -51,10 +51,10 @@ class StatsCombiner extends Combiner with LazyLogging {
     val head = iter.next()
     if (!iter.hasNext) { head } else {
       val sftName = try {
-        CachedLazyBinaryMetadata.decodeRow(key.getRow.getBytes, separator)._1
+        KeyValueStoreMetadata.decodeRow(key.getRow.getBytes, separator)._1
       } catch {
         // back compatible check
-        case NonFatal(e) => SingleRowAccumuloMetadata.getTypeName(key.getRow)
+        case NonFatal(_) => SingleRowAccumuloMetadata.getTypeName(key.getRow)
       }
       val serializer = serializers(sftName)
 
@@ -91,7 +91,7 @@ object StatsCombiner {
   val SeparatorOption = "sep"
 
   def configure(sft: SimpleFeatureType, connector: Connector, table: String, separator: String): Unit = {
-    AccumuloVersion.ensureTableExists(connector, table)
+    TableUtils.createTableIfNeeded(connector, table)
 
     val sftKey = getSftKey(sft)
     val sftOpt = SimpleFeatureTypes.encodeType(sft)

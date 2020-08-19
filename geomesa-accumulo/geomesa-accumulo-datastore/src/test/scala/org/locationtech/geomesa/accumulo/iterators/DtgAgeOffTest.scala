@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -9,115 +9,85 @@
 package org.locationtech.geomesa.accumulo.iterators
 
 import java.time.{ZoneOffset, ZonedDateTime}
-import java.util.Date
-import java.util.concurrent.TimeUnit
+import java.util.{Collections, Date}
 
-import org.apache.accumulo.core.client.mock.MockInstance
-import org.apache.accumulo.core.client.security.tokens.PasswordToken
-import org.apache.accumulo.core.security.Authorizations
-import org.geotools.data.DataStoreFinder
-import org.geotools.factory.Hints
+import org.geotools.data.{DataStore, DataStoreFinder}
 import org.junit.runner.RunWith
-import org.locationtech.geomesa.accumulo.TestWithDataStore
-import org.locationtech.geomesa.accumulo.data.{AccumuloDataStore, AccumuloDataStoreParams}
+import org.locationtech.geomesa.accumulo.TestWithFeatureType
+import org.locationtech.geomesa.accumulo.data.AccumuloDataStoreParams
 import org.locationtech.geomesa.features.ScalaSimpleFeature
 import org.locationtech.geomesa.security.SecurityUtils
 import org.locationtech.geomesa.utils.collection.SelfClosingIterator
-import org.locationtech.geomesa.utils.text.WKTUtils
+import org.locationtech.geomesa.utils.geotools.SimpleFeatureTypes
+import org.locationtech.geomesa.utils.geotools.SimpleFeatureTypes.Configs
 import org.opengis.feature.simple.SimpleFeature
 import org.opengis.filter.Filter
 import org.specs2.mutable.Specification
 import org.specs2.runner.JUnitRunner
 
-import scala.concurrent.duration.Duration
-
 @RunWith(classOf[JUnitRunner])
-class DtgAgeOffTest extends Specification with TestWithDataStore {
+class DtgAgeOffTest extends Specification with TestWithFeatureType {
+
+  import scala.collection.JavaConverters._
 
   sequential
 
-  override val spec = "some_id:String,dtg:Date,geom:Point:srid=4326"
-  override val tableSharing = false
+  override val spec = "dtg:Date,geom:Point:srid=4326"
+
+  val today: ZonedDateTime = ZonedDateTime.now(ZoneOffset.UTC)
+
+  def add(ids: Range, ident: String, vis: String): Unit = {
+    val features = ids.map { i =>
+      ScalaSimpleFeature.create(sft, s"${ident}_$i", Date.from(today.minusDays(i).toInstant), s"POINT($i $i)")
+    }
+    features.foreach(SecurityUtils.setFeatureVisibility(_, vis))
+    addFeatures(features)
+  }
+
+  def getDataStore(user: String): DataStore =
+    DataStoreFinder.getDataStore((dsParams ++ Map(AccumuloDataStoreParams.UserParam.key -> user)).asJava)
+
+  def configureAgeOff(days: Int): Unit = {
+    ds.updateSchema(sft.getTypeName,
+      SimpleFeatureTypes.immutable(sft, Collections.singletonMap(Configs.FeatureExpiration, s"dtg($days days)")))
+  }
+
+  def query(ds: DataStore): Seq[SimpleFeature] =
+    SelfClosingIterator(ds.getFeatureSource(sft.getTypeName).getFeatures(Filter.INCLUDE).features).toList
 
   "DTGAgeOff" should {
+    "run at scan time with vis" in {
+      add(1 to 10, "id", "user")
+      add(1 to 10, "idx2", "system")
+      add(1 to 10, "idx3", "admin")
 
-    def configAgeOff(ads: AccumuloDataStore, days: Int): Unit = {
-      DtgAgeOffIterator.clear(ads, ads.getSchema(sft.getTypeName))
-      DtgAgeOffIterator.set(ads, ads.getSchema(sft.getTypeName), Duration.create(days, TimeUnit.DAYS), "dtg")
-    }
+      val userDs = getDataStore(user.name)
+      val adminDs = getDataStore(admin.name)
+      val sysDs = ds
 
-    val today: ZonedDateTime = ZonedDateTime.now(ZoneOffset.UTC)
+      query(userDs) must haveSize(10)
+      query(adminDs) must haveSize(20)
+      query(sysDs) must haveSize(30)
 
-    def createSF(i: Int, id: String, vis: Option[String]): SimpleFeature = {
-      val geom = WKTUtils.read(s"POINT($i $i)")
-      val arr = Array[AnyRef](
-        id,
-        Date.from(today.minusDays(i).toInstant),
-        geom
-      )
-      val sf = ScalaSimpleFeature.create(sft, id, arr: _*)
-      sf.getUserData.put(Hints.USE_PROVIDED_FID, java.lang.Boolean.TRUE)
-      vis.map(SecurityUtils.setFeatureVisibility(sf, _))
-      sf
-    }
+      configureAgeOff(11)
+      query(userDs) must haveSize(10)
+      query(adminDs) must haveSize(20)
+      query(sysDs) must haveSize(30)
 
-    def testDays(d: Int): Seq[SimpleFeature] = {
-      configAgeOff(ds, d)
-      SelfClosingIterator(ds.getFeatureSource(sft.getTypeName).getFeatures(Filter.INCLUDE).features).toSeq
-    }
+      configureAgeOff(10)
+      query(userDs) must haveSize(9)
+      query(adminDs) must haveSize(18)
+      query(sysDs) must haveSize(27)
 
-    "run at scan time" >> {
-      addFeatures((1 to 10).map(i => createSF(i, s"id_$i", Some("A"))))
-      testDays(11) must haveSize(10)
-      testDays(10) must haveSize(9)
-      testDays(5) must haveSize(4)
-      testDays(1) must haveSize(0)
+      configureAgeOff(5)
+      query(userDs) must haveSize(4)
+      query(adminDs) must haveSize(8)
+      query(sysDs) must haveSize(12)
 
-      success
-    }
-
-    "respect vis with ageoff (vis trumps ageoff)" >> {
-      // these exist but shouldn't be read!
-      addFeatures((1 to 10).map(i => createSF(i, s"anotherid_$i", Some("D"))))
-      testDays(11) must haveSize(10)
-      testDays(10) must haveSize(9)
-      testDays(5) must haveSize(4)
-      testDays(1) must haveSize(0)
-
-      val dsWithExtraAuth = {
-        val connWithExtraAuth = {
-          val mockInstance = new MockInstance("mycloud")
-          val mockConnector = mockInstance.getConnector("user2", new PasswordToken("password2"))
-          mockConnector.securityOperations().changeUserAuthorizations("user2", new Authorizations("A,B,C,D"))
-          mockConnector
-        }
-        import scala.collection.JavaConversions._
-        val params = dsParams ++ Map(AccumuloDataStoreParams.ConnectorParam.key -> connWithExtraAuth)
-        DataStoreFinder.getDataStore(params).asInstanceOf[AccumuloDataStore]
-      }
-
-      def testWithExtraAuth(d: Int): Seq[SimpleFeature] = {
-        configAgeOff(dsWithExtraAuth, d)
-        SelfClosingIterator(dsWithExtraAuth.getFeatureSource(sft.getTypeName).getFeatures(Filter.INCLUDE).features).toSeq
-      }
-
-      testWithExtraAuth(11) must haveSize(20)
-      testWithExtraAuth(10) must haveSize(18)
-      testWithExtraAuth(5) must haveSize(8)
-      testWithExtraAuth(1) must haveSize(0)
-
-      // these can be read
-      addFeatures((1 to 10).map(i => createSF(i, s"anotherid_$i", Some("C"))))
-      testDays(11) must haveSize(20)
-      testDays(10) must haveSize(18)
-      testDays(5) must haveSize(8)
-      testDays(1) must haveSize(0)
-
-      // these are 3x
-      testWithExtraAuth(11) must haveSize(30)
-      testWithExtraAuth(10) must haveSize(27)
-      testWithExtraAuth(5) must haveSize(12)
-      testWithExtraAuth(1) must haveSize(0)
+      configureAgeOff(1)
+      query(userDs) must haveSize(0)
+      query(adminDs) must haveSize(0)
+      query(sysDs) must haveSize(0)
     }
   }
 }

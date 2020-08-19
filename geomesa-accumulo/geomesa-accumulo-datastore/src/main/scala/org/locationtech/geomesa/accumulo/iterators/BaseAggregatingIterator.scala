@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -8,62 +8,49 @@
 
 package org.locationtech.geomesa.accumulo.iterators
 
-import java.util.{Collection => jCollection, Map => jMap}
-
-import com.typesafe.scalalogging.LazyLogging
-import org.apache.accumulo.core.client.IteratorSetting
 import org.apache.accumulo.core.data.{Range => aRange, _}
 import org.apache.accumulo.core.iterators.{IteratorEnvironment, SortedKeyValueIterator}
-import org.locationtech.geomesa.accumulo.index.AccumuloFeatureIndex
-import org.locationtech.geomesa.accumulo.iterators.BaseAggregatingIterator.{DupeOpt, MaxDupeOpt}
-import org.locationtech.geomesa.index.api.GeoMesaIndexManager
+import org.locationtech.geomesa.accumulo.iterators.BaseAggregatingIterator.BatchScanCallback
 import org.locationtech.geomesa.index.iterators.AggregatingScan
-import org.opengis.feature.simple.SimpleFeature
+import org.locationtech.geomesa.index.iterators.AggregatingScan.{AggregateCallback, RowValue}
 
 /**
  * Aggregating iterator - only works on kryo-encoded features
  */
-abstract class BaseAggregatingIterator[T <: AnyRef { def isEmpty: Boolean; def clear(): Unit }]
-    extends SortedKeyValueIterator[Key, Value] with AggregatingScan[T] with DeduplicatingScan[T] {
+abstract class BaseAggregatingIterator[T <: AggregatingScan.Result]
+    extends SortedKeyValueIterator[Key, Value] with AggregatingScan[T] {
+
+  import scala.collection.JavaConverters._
 
   var source: SortedKeyValueIterator[Key, Value] = _
 
   protected var topKey: Key = _
   private var topValue: Value = new Value()
   private var currentRange: aRange = _
-
-  override val manager: GeoMesaIndexManager[_, _, _] = AccumuloFeatureIndex
+  private var needToAdvance = false
 
   override def init(src: SortedKeyValueIterator[Key, Value],
-                    options: jMap[String, String],
+                    options: java.util.Map[String, String],
                     env: IteratorEnvironment): Unit = {
-    import scala.collection.JavaConversions._
     this.source = src
-    super.init(options.toMap)
+    super.init(options.asScala.toMap)
   }
 
   override def hasTop: Boolean = topKey != null
   override def getTopKey: Key = topKey
   override def getTopValue: Value = topValue
 
-  override def seek(range: aRange, columnFamilies: jCollection[ByteSequence], inclusive: Boolean): Unit = {
+  override def seek(range: aRange, columnFamilies: java.util.Collection[ByteSequence], inclusive: Boolean): Unit = {
     currentRange = range
     source.seek(range, columnFamilies, inclusive)
+    needToAdvance = false
     findTop()
   }
 
-  override def next(): Unit = {
-    if (!source.hasTop) {
-      topKey = null
-      topValue = null
-    } else {
-      findTop()
-    }
-  }
+  override def next(): Unit = findTop()
 
-  // noinspection LanguageFeature
-  def findTop(): Unit = {
-    val result = aggregate()
+  private def findTop(): Unit = {
+    val result = aggregate(new BatchScanCallback()).result
     if (result == null) {
       topKey = null // hasTop will be false
       topValue = null
@@ -76,55 +63,39 @@ abstract class BaseAggregatingIterator[T <: AnyRef { def isEmpty: Boolean; def c
     }
   }
 
-  override def hasNextData: Boolean = source.hasTop && !currentRange.afterEndKey(source.getTopKey)
+  override protected def hasNextData: Boolean = {
+    if (needToAdvance) {
+      source.next() // advance the source iterator, this may invalidate the top key/value we've already read
+      needToAdvance = false
+    }
+    source.hasTop && !currentRange.afterEndKey(source.getTopKey)
+  }
 
-  override def nextData(setValues: (Array[Byte], Int, Int, Array[Byte], Int, Int) => Unit): Unit = {
+  override protected def nextData(): RowValue = {
+    needToAdvance = true
     topKey = source.getTopKey
     val value = source.getTopValue.get()
-    setValues(topKey.getRow.getBytes, 0, topKey.getRow.getLength, value, 0, value.length)
-    source.next() // Advance the source iterator
+    RowValue(topKey.getRow.getBytes, 0, topKey.getRow.getLength, value, 0, value.length)
   }
 
   override def deepCopy(env: IteratorEnvironment): SortedKeyValueIterator[Key, Value] =
     throw new NotImplementedError()
 }
 
-trait DeduplicatingScan[T <: AnyRef { def isEmpty: Boolean; def clear(): Unit }] extends AggregatingScan[T] {
+object BaseAggregatingIterator {
 
-  // server-side deduplication - not 100% effective, but we can't dedupe client side as we don't send ids
-  private var dedupe: (SimpleFeature) => Boolean = _
-  private val idsSeen = scala.collection.mutable.HashSet.empty[String]
-  private var maxIdsToTrack = -1
+  private class BatchScanCallback extends AggregateCallback {
 
-  abstract override def init(options: Map[String, String]): Unit = {
-    if (options.get(DupeOpt).exists(_.toBoolean)) {
-      idsSeen.clear()
-      maxIdsToTrack = options.get(MaxDupeOpt).map(_.toInt).getOrElse(99999)
-      dedupe = deduplicate
-    } else {
-      dedupe = (_) => true
+    private var bytes: Array[Byte] = _
+
+    override def batch(bytes: Array[Byte]): Boolean = {
+      this.bytes = bytes
+      false // we want to stop scanning and return the batch
     }
-    super.init(options)
-  }
 
-  abstract override protected def validateFeature(f: SimpleFeature): Boolean =
-    dedupe(f) && super.validateFeature(f)
+    // we always keep scanning and rely on client connections to stop the scan
+    override def partial(bytes: => Array[Byte]): Boolean = true
 
-  private def deduplicate(sf: SimpleFeature): Boolean =
-    if (idsSeen.size < maxIdsToTrack) {
-      idsSeen.add(sf.getID)
-    } else {
-      !idsSeen.contains(sf.getID)
-    }
-}
-
-object BaseAggregatingIterator extends LazyLogging {
-
-  protected [iterators] val DupeOpt    = "dupes"
-  protected [iterators] val MaxDupeOpt = "max-dupes"
-
-  def configure(is: IteratorSetting, deduplicate: Boolean, maxDuplicates: Option[Int]): Unit = {
-    is.addOption(DupeOpt, deduplicate.toString)
-    maxDuplicates.foreach(m => is.addOption(MaxDupeOpt, m.toString))
+    def result: Array[Byte] = bytes
   }
 }

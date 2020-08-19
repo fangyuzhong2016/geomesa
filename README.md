@@ -14,12 +14,12 @@ geospatial analytics.
   <img align="center" height="150px" src="http://www.geomesa.org/img/geomesa-overview-848x250.png"></img>
 </p>
 
-#### ![LocationTech](https://pbs.twimg.com/profile_images/2552421256/hv2oas84tv7n3maianiq_normal.png) GeoMesa is a member of the [LocationTech](http://www.locationtech.org) working group of the Eclipse Foundation.
+#### ![LocationTech](https://pbs.twimg.com/profile_images/2552421256/hv2oas84tv7n3maianiq_normal.png) GeoMesa is a member of the [LocationTech](https://projects.eclipse.org/projects/locationtech.geomesa) working group of the Eclipse Foundation.
 
 ## Join the Community
 
 * <a href="https://gitter.im/locationtech/geomesa?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge" target="_blank"><img src="https://badges.gitter.im/Join%20Chat.svg" alt="Join the chat at https://gitter.im/locationtech/geomesa"></img></a>
-* GeoMesa [Users](https://locationtech.org/mhonarc/lists/geomesa-users/) and [Dev](https://locationtech.org/mhonarc/lists/geomesa-dev/) mailing lists
+* GeoMesa [Users](https://accounts.eclipse.org/mailing-list/geomesa-users) and [Dev](https://accounts.eclipse.org/mailing-list/geomesa-dev) mailing lists
 * GeoMesa [JIRA](https://geomesa.atlassian.net/issues/?jql=order+by+created+DESC) for issue tracking
 
 ## Documentation
@@ -30,25 +30,30 @@ geospatial analytics.
   [Accumulo](http://www.geomesa.org/documentation/tutorials/geomesa-quickstart-accumulo.html) |
   [Cassandra](http://www.geomesa.org/documentation/tutorials/geomesa-quickstart-cassandra.html) |
   [Kafka](http://www.geomesa.org/documentation/tutorials/geomesa-quickstart-kafka.html) |
+  [Redis](http://www.geomesa.org/documentation/tutorials/geomesa-quickstart-redis.html) |
   [FileSystem](http://www.geomesa.org/documentation/current/tutorials/geomesa-quickstart-fsds.html)
  
 * [Tutorials](http://www.geomesa.org/tutorials/)
 
 ## Downloads
 
-**Current release: 2.0.2**
+**Current release: 2.4.0**
 
   &nbsp;&nbsp;&nbsp;&nbsp;
-  [**HBase**](https://github.com/locationtech/geomesa/releases/download/geomesa_2.11-2.0.2/geomesa-hbase_2.11-2.0.2-bin.tar.gz) |
-  [**Accumulo**](https://github.com/locationtech/geomesa/releases/download/geomesa_2.11-2.0.2/geomesa-accumulo_2.11-2.0.2-bin.tar.gz) |
-  [**Cassandra**](https://github.com/locationtech/geomesa/releases/download/geomesa_2.11-2.0.2/geomesa-cassandra_2.11-2.0.2-bin.tar.gz) |
-  [**Kafka**](https://github.com/locationtech/geomesa/releases/download/geomesa_2.11-2.0.2/geomesa-kafka_2.11-2.0.2-bin.tar.gz) |
-  [**FileSystem**](https://github.com/locationtech/geomesa/releases/download/geomesa_2.11-2.0.2/geomesa-fs_2.11-2.0.2-bin.tar.gz) |
-  [**Source**](https://github.com/locationtech/geomesa/archive/geomesa_2.11-2.0.2.tar.gz) |
-  [**CheckSums**](https://github.com/locationtech/geomesa/releases/geomesa_2.11-2.0.2)
+  [**HBase**](https://github.com/locationtech/geomesa/releases/download/geomesa_2.11-2.4.0/geomesa-hbase_2.11-2.4.0-bin.tar.gz) |
+  [**Accumulo**](https://github.com/locationtech/geomesa/releases/download/geomesa_2.11-2.4.0/geomesa-accumulo_2.11-2.4.0-bin.tar.gz) |
+  [**Cassandra**](https://github.com/locationtech/geomesa/releases/download/geomesa_2.11-2.4.0/geomesa-cassandra_2.11-2.4.0-bin.tar.gz) |
+  [**Kafka**](https://github.com/locationtech/geomesa/releases/download/geomesa_2.11-2.4.0/geomesa-kafka_2.11-2.4.0-bin.tar.gz) |
+  [**Redis**](https://github.com/locationtech/geomesa/releases/download/geomesa_2.11-2.4.0/geomesa-redis_2.11-2.4.0-bin.tar.gz) |
+  [**FileSystem**](https://github.com/locationtech/geomesa/releases/download/geomesa_2.11-2.4.0/geomesa-fs_2.11-2.4.0-bin.tar.gz) |
+  [**Bigtable**](https://github.com/locationtech/geomesa/releases/download/geomesa_2.11-2.4.0/geomesa-bigtable_2.11-2.4.0-bin.tar.gz) |
+  [**Source**](https://github.com/locationtech/geomesa/archive/geomesa_2.11-2.4.0.tar.gz) |
+  [**CheckSums**](https://github.com/locationtech/geomesa/releases/geomesa_2.11-2.4.0)
 
-**Development version: 2.1.0-SNAPSHOT** &nbsp;
-  [![Build Status](https://api.travis-ci.org/locationtech/geomesa.svg?branch=master)](https://travis-ci.org/locationtech/geomesa)
+**Development version: 2.5.0-SNAPSHOT**
+
+  &nbsp;&nbsp;&nbsp;&nbsp;
+  [![Build Status](https://github.com/locationtech/geomesa/workflows/CI/badge.svg?branch=main)](https://github.com/locationtech/geomesa/actions?query=branch%3Amain+workflow%3ACI)
 
 ### Verifying Downloads
 
@@ -62,7 +67,7 @@ $ gpg2 --keyserver hkp://pool.sks-keyservers.net --recv-keys CD24F317
 Then verify the file:
 
 ```bash
-$ gpg2 --verify geomesa-accumulo_2.11-2.0.2-bin.tar.gz.asc geomesa-accumulo_2.11-2.0.2-bin.tar.gz
+$ gpg2 --verify geomesa-accumulo_2.11-2.4.0-bin.tar.gz.asc geomesa-accumulo_2.11-2.4.0-bin.tar.gz
 ```
 
 The keys currently used for signing are:
@@ -89,50 +94,47 @@ in other repositories. To include GeoMesa in your project, add the following rep
 
 ```xml
 <repositories>
-  <repository>
-    <id>boundlessgeo</id>
-    <url>https://repo.boundlessgeo.com/main</url>
-  </repository>
+  <!-- geotools -->
   <repository>
     <id>osgeo</id>
-    <url>http://download.osgeo.org/webdav/geotools</url>
+    <url>https://repo.osgeo.org/repository/release</url>
   </repository>
+  <!-- confluent -->
   <repository>
-    <id>conjars.org</id>
-    <url>http://conjars.org/repo</url>
+    <id>confluent</id>
+    <url>https://packages.confluent.io/maven/</url>
   </repository>
 </repositories>
 ```
 
-and then include the desired `geomesa-*` dependencies:
+You may then include the desired `geomesa-*` dependencies, for example:
 
 ```xml
 <dependency>
   <groupId>org.locationtech.geomesa</groupId>
   <artifactId>geomesa-utils_2.11</artifactId>
-  <version>2.0.2</version>
+  <version>2.4.0</version>
 </dependency>
-  ...
 ```
 
 To download from the LocationTech Maven repository (required for older versions), add:
 
 ```xml
 <repository>
-  <id>locationtech-releases</id>
-  <url>https://repo.locationtech.org/content/groups/releases</url>
+  <id>eclipse-releases</id>
+  <url>https://repo.eclipse.org/content/groups/releases</url>
   <snapshots>
     <enabled>false</enabled>
   </snapshots>
 </repository>
 ```
 
-For snapshot integration, add:
+For nightly snapshot integration, add:
 
 ```xml
 <repository>
   <id>geomesa-snapshots</id>
-  <url>https://repo.locationtech.org/content/repositories/geomesa-snapshots</url>
+  <url>https://repo.eclipse.org/content/repositories/geomesa-snapshots</url>
   <releases>
     <enabled>false</enabled>
   </releases>
@@ -149,16 +151,13 @@ Similarly, integration with `sbt` is straightforward:
 ```scala
 // Add necessary resolvers
 resolvers ++= Seq(
-  "locationtech-releases" at "https://repo.locationtech.org/content/groups/releases",
-  "boundlessgeo" at "https://repo.boundlessgeo.com/main",
-  "osgeo" at "http://download.osgeo.org/webdav/geotools",
-  "conjars.org" at "http://conjars.org/repo"
+  "osgeo" at "https://repo.osgeo.org/repository/release",
+  "confluent" at "https://packages.confluent.io/maven"
 )
 
 // Select desired modules
 libraryDependencies ++= Seq(
-  "org.locationtech.geomesa" %% "geomesa-utils" % "2.0.2",
-  ...
+  "org.locationtech.geomesa" %% "geomesa-utils" % "2.4.0"
 )
 ```
 
@@ -168,7 +167,7 @@ Requirements:
 
 * [Git](http://git-scm.com/)
 * [Java JDK 8](http://www.oracle.com/technetwork/java/javase/downloads/index.html)
-* [Apache Maven](http://maven.apache.org/) 3.2.2 or later
+* [Apache Maven](http://maven.apache.org/) 3.6.3 or later
 
 Use Git to download the source code. Navigate to the destination directory, then run:
 
@@ -184,3 +183,8 @@ provides the script `build/mvn`, which is a wrapper around Maven that downloads 
 [Zinc](https://github.com/typesafehub/zinc), a fast incremental compiler:
 
     build/mvn clean install -T8 -DskipTests
+
+If the Zinc build fails with an error finding "javac", try setting the JAVA_HOME
+environment variable to point to the root of your JDK.  Example from a Mac:
+
+    JAVA_HOME="/Library/Java/JavaVirtualMachines/jdk1.8.0_51.jdk/Contents/Home" build/mvn clean install

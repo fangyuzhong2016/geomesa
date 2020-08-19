@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -15,10 +15,12 @@ import com.typesafe.scalalogging.LazyLogging
 import org.geotools.data._
 import org.geotools.data.collection.ListFeatureCollection
 import org.geotools.data.simple.SimpleFeatureStore
-import org.geotools.factory.Hints
 import org.geotools.filter.text.ecql.ECQL
+import org.geotools.util.factory.Hints
+import org.junit.runner.RunWith
 import org.locationtech.geomesa.features.ScalaSimpleFeature
 import org.locationtech.geomesa.hbase.data.HBaseDataStoreParams._
+import org.locationtech.geomesa.index.conf.QueryProperties
 import org.locationtech.geomesa.index.conf.partition.{TablePartition, TimePartition}
 import org.locationtech.geomesa.index.index.attribute.AttributeIndex
 import org.locationtech.geomesa.index.index.id.IdIndex
@@ -26,29 +28,32 @@ import org.locationtech.geomesa.index.index.z2.Z2Index
 import org.locationtech.geomesa.index.index.z3.Z3Index
 import org.locationtech.geomesa.index.utils.ExplainPrintln
 import org.locationtech.geomesa.utils.collection.SelfClosingIterator
+import org.locationtech.geomesa.utils.date.DateUtils.toInstant
 import org.locationtech.geomesa.utils.geotools.SimpleFeatureTypes.Configs
 import org.locationtech.geomesa.utils.geotools.{FeatureUtils, SimpleFeatureTypes}
 import org.locationtech.geomesa.utils.io.WithClose
 import org.opengis.feature.simple.SimpleFeature
 import org.specs2.matcher.MatchResult
+import org.specs2.mutable.Specification
+import org.specs2.runner.JUnitRunner
 
 import scala.collection.JavaConversions._
 import scala.collection.JavaConverters._
 
-class HBasePartitioningTest extends HBaseTest with LazyLogging {
+@RunWith(classOf[JUnitRunner])
+class HBasePartitioningTest extends Specification with LazyLogging {
 
   sequential
-
-  step {
-    logger.info("Starting the HBase partitioning test")
-  }
 
   "HBaseDataStore" should {
     "partition tables based on feature date" in {
       val typeName = "testpartition"
       val spec = "name:String:index=true,attr:String,dtg:Date,*geom:Point:srid=4326;"
 
-      val params = Map(ConnectionParam.getName -> connection, HBaseCatalogParam.getName -> catalogTableName)
+      val params = Map(
+        ConnectionParam.getName -> MiniCluster.connection,
+        HBaseCatalogParam.getName -> getClass.getSimpleName
+      )
       val ds = DataStoreFinder.getDataStore(params).asInstanceOf[HBaseDataStore]
       ds must not(beNull)
 
@@ -56,7 +61,7 @@ class HBasePartitioningTest extends HBaseTest with LazyLogging {
         ds.getSchema(typeName) must beNull
 
         ds.createSchema(SimpleFeatureTypes.createType(typeName,
-          s"$spec${Configs.TABLE_PARTITIONING}=${TimePartition.Name}"))
+          s"$spec${Configs.TablePartitioning}=${TimePartition.Name}"))
 
         val sft = ds.getSchema(typeName)
 
@@ -80,28 +85,26 @@ class HBasePartitioningTest extends HBaseTest with LazyLogging {
         ids.asScala.map(_.getID) must containTheSameElementsAs((0 until 8).map(_.toString))
 
         val indices = ds.manager.indices(sft)
-        indices.map(_.name) must containTheSameElementsAs(Seq(Z3Index.Name, Z2Index.Name, IdIndex.Name, AttributeIndex.Name))
-        foreach(indices)(i => i.getTableNames(sft, ds, None) must haveLength(2))
+        indices.map(_.name) must containTheSameElementsAs(Seq(Z3Index.name, Z2Index.name, IdIndex.name, AttributeIndex.name))
+        foreach(indices)(i => i.getTableNames(None) must haveLength(2))
 
         // add the last two features to an alternate table and adopt them
         ds.createSchema(SimpleFeatureTypes.createType("testpartitionadoption", spec))
         WithClose(ds.getFeatureWriterAppend("testpartitionadoption", Transaction.AUTO_COMMIT)) { writer =>
-          FeatureUtils.copyToWriter(writer, toAdd(8), useProvidedFid = true)
-          writer.write()
-          FeatureUtils.copyToWriter(writer, toAdd(9), useProvidedFid = true)
-          writer.write()
+          FeatureUtils.write(writer, toAdd(8), useProvidedFid = true)
+          FeatureUtils.write(writer, toAdd(9), useProvidedFid = true)
         }
         // duplicates the logic in `org.locationtech.geomesa.tools.data.ManagePartitionsCommand.AdoptPartitionCommand`
-        indices.foreach { index =>
-          val table = index.getTableNames(ds.getSchema("testpartitionadoption"), ds, None).head
+        ds.manager.indices(ds.getSchema("testpartitionadoption")).foreach { index =>
+          val table = index.getTableNames(None).head
           ds.metadata.insert(sft.getTypeName, index.tableNameKey(Some("foo")), table)
         }
         def zonedDateTime(sf: SimpleFeature) =
-          ZonedDateTime.ofInstant(sf.getAttribute("dtg").asInstanceOf[Date].toInstant, ZoneOffset.UTC)
+          ZonedDateTime.ofInstant(toInstant(sf.getAttribute("dtg").asInstanceOf[Date]), ZoneOffset.UTC)
         TablePartition(ds, sft).get.asInstanceOf[TimePartition].register("foo", zonedDateTime(toAdd(8)), zonedDateTime(toAdd(9)))
 
         // verify the table was adopted
-        foreach(indices)(i => i.getTableNames(sft, ds, None) must haveLength(3))
+        foreach(indices)(i => i.getTableNames(None) must haveLength(3))
 
         val transformsList = Seq(null, Array("geom"), Array("geom", "dtg"), Array("name"), Array("dtg", "geom", "attr", "name"))
 
@@ -152,6 +155,11 @@ class HBasePartitioningTest extends HBaseTest with LazyLogging {
         feature.getAttribute(attribute) mustEqual results.find(_.getID == feature.getID).get.getAttribute(attribute)
       }
     }
-    ds.getFeatureSource(typeName).getFeatures(query).size() mustEqual results.length
+    QueryProperties.QueryExactCount.threadLocalValue.set("true")
+    try {
+      ds.getFeatureSource(typeName).getFeatures(query).size() mustEqual results.length
+    } finally {
+      QueryProperties.QueryExactCount.threadLocalValue.remove()
+    }
   }
 }

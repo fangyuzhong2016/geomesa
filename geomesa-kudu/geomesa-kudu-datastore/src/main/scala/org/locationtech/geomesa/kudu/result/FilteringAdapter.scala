@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -40,11 +40,13 @@ case class FilteringAdapter(sft: SimpleFeatureType, auths: Seq[Array[Byte]], ecq
   override val columns: Seq[String] =
     Seq(FeatureIdAdapter.name, VisibilityAdapter.name) ++ schema.schema.map(_.getName)
 
+  override def result: SimpleFeatureType = sft
+
   override def adapt(results: CloseableIterator[RowResult]): CloseableIterator[SimpleFeature] = {
     results.flatMap { row =>
       val vis = VisibilityAdapter.readFromRow(row)
       if ((vis == null || VisibilityEvaluator.parse(vis).evaluate(auths)) &&
-          { feature.setRowResult(row); ecql.evaluate(feature)}) {
+          { feature.setRowResult(row); ecql.evaluate(feature) }) {
         SecurityUtils.setFeatureVisibility(feature, vis)
         Iterator.single(feature)
       } else {

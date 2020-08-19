@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -11,7 +11,6 @@ package org.locationtech.geomesa.lambda.stream.kafka
 import java.time.Clock
 import java.util.{Properties, UUID}
 
-import com.google.common.primitives.Longs
 import com.typesafe.scalalogging.LazyLogging
 import kafka.admin.AdminUtils
 import kafka.common.TopicAlreadyMarkedForDeletionException
@@ -21,18 +20,21 @@ import org.apache.kafka.clients.producer._
 import org.apache.kafka.common.serialization._
 import org.apache.kafka.common.{Cluster, TopicPartition}
 import org.geotools.data.{DataStore, Query, Transaction}
-import org.geotools.factory.Hints
+import org.geotools.util.factory.Hints
 import org.locationtech.geomesa.features.SerializationOption.SerializationOptions
 import org.locationtech.geomesa.features.kryo.KryoFeatureSerializer
 import org.locationtech.geomesa.features.kryo.impl.KryoFeatureDeserialization
 import org.locationtech.geomesa.index.geotools.GeoMesaFeatureWriter
+import org.locationtech.geomesa.index.planning.QueryInterceptor.QueryInterceptorFactory
 import org.locationtech.geomesa.index.utils.{ExplainLogging, Explainer}
 import org.locationtech.geomesa.kafka.{AdminUtilsVersions, KafkaConsumerVersions}
 import org.locationtech.geomesa.lambda.data.LambdaDataStore.LambdaConfig
 import org.locationtech.geomesa.lambda.stream.kafka.KafkaStore.MessageTypes
 import org.locationtech.geomesa.lambda.stream.{OffsetManager, TransientStore}
-import org.locationtech.geomesa.security.{AuthorizationsProvider, SecurityUtils}
+import org.locationtech.geomesa.security.AuthorizationsProvider
+import org.locationtech.geomesa.utils.collection.CloseableIterator
 import org.locationtech.geomesa.utils.conf.GeoMesaSystemProperties.SystemProperty
+import org.locationtech.geomesa.utils.index.ByteArrays
 import org.locationtech.geomesa.utils.io.{CloseWithLogging, WithClose}
 import org.opengis.feature.simple.{SimpleFeature, SimpleFeatureType}
 import org.opengis.filter.Filter
@@ -62,7 +64,9 @@ class KafkaStore(ds: DataStore,
     KryoFeatureSerializer(sft, options)
   }
 
-  private val queryRunner = new KafkaQueryRunner(cache, stats, authProvider)
+  private val interceptors = QueryInterceptorFactory(ds)
+
+  private val queryRunner = new KafkaQueryRunner(cache, stats, authProvider, interceptors)
 
   private val loader = {
     val consumers = KafkaStore.consumers(consumerConfig, topic, offsetManager, config.consumers, cache.partitionAssigned)
@@ -72,16 +76,6 @@ class KafkaStore(ds: DataStore,
 
   private val persistence = if (config.expiry == Duration.Inf) { None } else {
     Some(new DataStorePersistence(ds, sft, offsetManager, cache, topic, config.expiry.toMillis, config.persist))
-  }
-
-  private val setVisibility: (SimpleFeature) => (SimpleFeature) = config.visibility match {
-    case None => (f) => f
-    case Some(vis) => (f) => {
-      if (SecurityUtils.getVisibility(f) == null) {
-        SecurityUtils.setFeatureVisibility(f, vis)
-      }
-      f
-    }
   }
 
   // register as a listener for offset changes
@@ -114,7 +108,7 @@ class KafkaStore(ds: DataStore,
   override def read(filter: Option[Filter] = None,
                     transforms: Option[Array[String]] = None,
                     hints: Option[Hints] = None,
-                    explain: Explainer = new ExplainLogging): Iterator[SimpleFeature] = {
+                    explain: Explainer = new ExplainLogging): CloseableIterator[SimpleFeature] = {
     val query = new Query()
     filter.foreach(query.setFilter)
     transforms.foreach(query.setPropertyNames)
@@ -123,7 +117,7 @@ class KafkaStore(ds: DataStore,
   }
 
   override def write(original: SimpleFeature): Unit = {
-    val feature = prepFeature(original)
+    val feature = GeoMesaFeatureWriter.featureWithFid(sft, original)
     val key = KafkaStore.serializeKey(clock.millis(), MessageTypes.Write)
     producer.send(new ProducerRecord(topic, key, serializer.serialize(feature)))
     logger.trace(s"Wrote feature to [$topic]: $feature")
@@ -132,7 +126,7 @@ class KafkaStore(ds: DataStore,
   override def delete(original: SimpleFeature): Unit = {
     import org.locationtech.geomesa.filter.ff
     // send a message to delete from all transient stores
-    val feature = prepFeature(original)
+    val feature = GeoMesaFeatureWriter.featureWithFid(sft, original)
     val key = KafkaStore.serializeKey(clock.millis(), MessageTypes.Delete)
     producer.send(new ProducerRecord(topic, key, serializer.serialize(feature)))
     // also delete from persistent store
@@ -154,13 +148,10 @@ class KafkaStore(ds: DataStore,
 
   override def close(): Unit = {
     CloseWithLogging(loader)
-    persistence.foreach(CloseWithLogging.apply)
+    CloseWithLogging(interceptors)
+    CloseWithLogging(persistence)
     offsetManager.removeOffsetListener(topic, cache)
   }
-
-  private def prepFeature(original: SimpleFeature): SimpleFeature =
-    setVisibility(GeoMesaFeatureWriter.featureWithFid(sft, original))
-
 }
 
 object KafkaStore {
@@ -172,10 +163,11 @@ object KafkaStore {
     val Delete: Byte = 1
   }
 
-  def topic(ns: String, sft: SimpleFeatureType): String =
-    s"${ns}_${sft.getTypeName}".replaceAll("[^a-zA-Z0-9_\\-]", "_")
+  def topic(ns: String, sft: SimpleFeatureType): String = topic(ns, sft.getTypeName)
 
-  def withZk[T](zookeepers: String)(fn: (ZkUtils) => T): T = {
+  def topic(ns: String, typeName: String): String = s"${ns}_$typeName".replaceAll("[^a-zA-Z0-9_\\-]", "_")
+
+  def withZk[T](zookeepers: String)(fn: ZkUtils => T): T = {
     val security = SystemProperty("geomesa.zookeeper.security.enabled").option.exists(_.toBoolean)
     val zkUtils = ZkUtils(zookeepers, 3000, 3000, security)
     try { fn(zkUtils) } finally {
@@ -243,7 +235,7 @@ object KafkaStore {
     result
   }
 
-  private [kafka] def deserializeKey(key: Array[Byte]): (Long, Byte) = (Longs.fromByteArray(key), key(8))
+  private [kafka] def deserializeKey(key: Array[Byte]): (Long, Byte) = (ByteArrays.readLong(key), key(8))
 
   private [kafka] class OffsetRebalanceListener(consumer: Consumer[Array[Byte], Array[Byte]],
                                                 manager: OffsetManager,

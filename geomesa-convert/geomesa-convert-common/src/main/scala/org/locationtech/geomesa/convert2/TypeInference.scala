@@ -1,5 +1,5 @@
 /***********************************************************************
- * Copyright (c) 2013-2018 Commonwealth Computer Research, Inc.
+ * Copyright (c) 2013-2020 Commonwealth Computer Research, Inc.
  * All rights reserved. This program and the accompanying materials
  * are made available under the terms of the Apache License, Version 2.0
  * which accompanies this distribution and is available at
@@ -11,7 +11,7 @@ package org.locationtech.geomesa.convert2
 import java.lang.{Boolean => jBoolean, Double => jDouble, Float => jFloat, Long => jLong}
 import java.util.{Date, Locale}
 
-import com.vividsolutions.jts.geom._
+import org.locationtech.jts.geom._
 import org.locationtech.geomesa.convert2.transforms.DateFunctionFactory.StandardDateParser
 import org.locationtech.geomesa.convert2.transforms.TransformerFunction
 import org.locationtech.geomesa.features.serialization.ObjectType
@@ -175,7 +175,7 @@ object TypeInference {
       spec.append(typ.name).append(':').append(typ.binding)
     }
     if (types.exists(_.typed == ObjectType.GEOMETRY)) {
-      spec.append(s";${SimpleFeatureTypes.Configs.MIXED_GEOMETRIES}=true")
+      spec.append(s";${SimpleFeatureTypes.Configs.MixedGeometries}=true")
     }
     SimpleFeatureTypes.createType(name, spec.toString())
   }
@@ -282,7 +282,7 @@ object TypeInference {
     * @return
     */
   private def binding(typed: ObjectType): String = typed match {
-    case STRING              => "String"
+    case STRING | null       => "String"
     case INT                 => "Int"
     case LONG                => "Long"
     case FLOAT               => "Float"
@@ -391,7 +391,7 @@ object TypeInference {
 
   object InferredType {
 
-    private val dateParsers = TransformerFunction.functions.values.collect { case f: StandardDateParser => f }.toSeq
+    private val dateParsers = TransformerFunction.functions.values.collect { case f: StandardDateParser => f }.toArray
 
     /**
       * Infer a type from a value. Returned type will have an empty name
@@ -445,10 +445,13 @@ object TypeInference {
     }
 
     private def tryDateParsing(s: String): Option[InferredType] = {
-      dateParsers.foreach { p =>
+      var i = 0
+      while (i < dateParsers.length) {
+        val p = dateParsers(i)
         if (Try(DateParsing.parseDate(s, p.format)).isSuccess) {
           return Some(InferredType("", DATE, FunctionTransform(s"${p.names.head}(", ")")))
         }
+        i += 1
       }
       None
     }
